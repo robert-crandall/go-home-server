@@ -7,7 +7,7 @@
 #   docker build -t my-app .
 
 # --- web build ---
-FROM oven/bun:1.3.13-alpine AS web
+FROM oven/bun:1.3.14-alpine AS web
 WORKDIR /web
 COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile
