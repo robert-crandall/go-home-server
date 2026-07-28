@@ -38,8 +38,9 @@ is the module - anything living there updates with `go get -u`.
 go-home-server/
   config/            # env config (+ .env)
   db/                # pgx pool + goose migration runner
-  migrations/        # shared migrations: users, sessions, push_subscriptions, api_tokens
+  migrations/        # shared migrations: users, sessions, push_subscriptions, api_tokens, files
   auth/              # opaque server-side sessions, cookies, middleware, huma handlers; opt-in API tokens (bearer auth)
+  files/             # per-user file uploads: bytes on a mounted disk, metadata in Postgres
   notify/            # web push (VAPID) + subscription store
   server/            # chi + huma bootstrap, embedded-SPA serving, graceful shutdown
   apiclient/         # tiny bearer-token HTTP client for scripts and MCP tools
@@ -50,6 +51,7 @@ go-home-server/
       internal/notes # sample per-user feature (delete when starting real work)
       internal/web   # embeds the built SPA
     web/             # Svelte 5 + Vite + Tailwind v4 + DaisyUI + Lucide + PWA + openapi-fetch
+    uploads/         # dev upload dir; bind-mounted to /data/uploads in compose
     Dockerfile       # multi-stage (web -> server -> distroless)
     docker-compose.yml
     .env.example
@@ -76,6 +78,24 @@ app. The root `.github/workflows/ci.yml` is this repo's own CI.
   and token management itself is session-only, so a leaked token can't mint,
   list, or revoke tokens. Apps that don't call `RegisterTokens` expose no token
   endpoints and ignore bearer credentials entirely.
+- **File uploads** - `POST/GET/DELETE /api/files` for per-user files, with the
+  bytes on a directory you bind-mount into the container and the metadata in
+  Postgres. Photos are the motivating case: the download endpoint streams
+  through `http.ServeContent`, so `<img src="/api/files/{id}">` gets Range and
+  conditional requests for free. Responses are `private, no-cache` - they're
+  per-user and deletable, and browser caches key on URL rather than session, so
+  caching one hard would leave it readable after logging out; revalidation
+  re-runs the ownership check and still answers 304. The stored
+  filename never touches the path (a random key plus a sanitized extension
+  does), the content type is sniffed from the bytes rather than trusted from the
+  client, and anything that isn't obviously safe to render is served
+  `Content-Disposition: attachment` so an uploaded `.html` can't become stored
+  XSS on your origin. `UPLOAD_DIR` is required and must already exist - the app
+  refuses to create it, so forgetting the bind mount is a startup crash instead
+  of photos quietly written to a container layer that's discarded on the next
+  deploy. `UPLOAD_MAX_BYTES` caps a single upload request body (25 MiB by
+  default). There's
+  no thumbnailing, dedup, or quota - the volume's size is the quota.
 - **Notifications** - store browser push subscriptions and send Web Push with
   VAPID. `notify.Send(ctx, userID, payload)` from anywhere. The template ships
   the frontend half (service worker + subscribe flow).

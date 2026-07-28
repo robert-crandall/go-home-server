@@ -62,6 +62,13 @@ fi
 find "$dest/server/internal/web/dist" -mindepth 1 -depth \
 	! -name 'index.html' ! -name '.gitignore' -delete 2>/dev/null || true
 
+# Drop anything uploaded while running the template locally. UPLOAD_DIR points
+# here in .env.example, so this directory holds real photos on a machine that
+# has run `make run` - they must not follow the template into a new app. Keep
+# the .gitignore so the directory still exists in a fresh clone.
+find "$dest/uploads" -mindepth 1 -depth \
+	! -name '.gitignore' -delete 2>/dev/null || true
+
 # Rewrite the app module path and every internal import.
 while IFS= read -r f; do
 	perl -pi -e "s{\Q$old_module\E}{$module}g" "$f"

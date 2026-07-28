@@ -11,6 +11,7 @@ foundation. This is what `scripts/new-app.sh` copies to start a new app.
 │   ├── cmd/         # server, migrate, openapi, vapid
 │   └── internal/    # notes (sample feature), app wiring, embedded SPA
 ├── web/             # Svelte 5 + Vite + Tailwind v4 + DaisyUI + Lucide + PWA
+├── uploads/         # where uploaded files land (bind-mounted in Docker)
 ├── Dockerfile       # multi-stage: web -> server -> distroless
 ├── docker-compose.yml
 └── .env.example
@@ -39,6 +40,20 @@ Web push is optional. Generate keys once and put them in `.env`:
 ```bash
 make vapid
 ```
+
+## File uploads
+
+`UPLOAD_DIR` is required and must already exist. `.env.example` points it at
+`../uploads` (relative to `server/`, because `make run` does `cd server`), and
+`docker-compose.yml` bind-mounts `./uploads` to `/data/uploads` in the
+container. The app deliberately refuses to create the directory: if it did,
+a missing bind mount would silently write your photos to a container layer that
+disappears on the next deploy, instead of crashing on startup where you'd
+notice. `UPLOAD_MAX_BYTES` caps a single upload request body (25 MiB by default).
+
+The `/photos` page is a working example - see `web/src/routes/Photos.svelte`.
+Uploads use plain `fetch` with `FormData` (openapi-fetch has no multipart
+story); listing and deleting go through the typed client like everything else.
 
 ## The API-first loop
 
@@ -155,8 +170,9 @@ update-check loop until they reload once; every deploy after that is automatic.
 
 ## What comes from the foundation
 
-Auth (sessions, cookies, middleware), web push, the pgx pool + migration runner,
-and the chi+huma server with embedded-SPA serving. Update it with:
+Auth (sessions, cookies, middleware), file uploads, web push, the pgx pool +
+migration runner, and the chi+huma server with embedded-SPA serving. Update it
+with:
 
 ```bash
 cd server && go get github.com/robert-crandall/go-home-server@latest && go mod tidy

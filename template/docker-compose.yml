@@ -29,8 +29,16 @@ services:
       VAPID_PUBLIC_KEY: ""
       VAPID_PRIVATE_KEY: ""
       VAPID_SUBJECT: "mailto:you@example.com"
+      # Where uploaded files are written. Must match the bind mount below - the
+      # app refuses to create the directory, so dropping the mount is a startup
+      # crash rather than photos written to a disposable container layer.
+      UPLOAD_DIR: /data/uploads
+      # Caps a single upload request body. Unset = 25 MiB.
+      #UPLOAD_MAX_BYTES: "26214400"
     ports:
       - "8080:8080"
+    volumes:
+      - ./uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy

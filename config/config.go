@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -33,6 +34,16 @@ type Config struct {
 	// registration is first-user-only (the app bootstraps a single user, then
 	// closes). Set ALLOW_OPEN_REGISTRATION=true for a genuinely multi-user app.
 	AllowOpenRegistration bool
+
+	// UploadDir is the directory file uploads are written to. It has no
+	// default on purpose: in production this is a bind-mounted host directory,
+	// and guessing a path would mean silently writing to the container's
+	// ephemeral layer. An app that never constructs files.NewService can leave
+	// it empty; one that does - including the template, which always registers
+	// the file routes - should treat empty as a fatal misconfiguration.
+	UploadDir string
+	// UploadMaxBytes caps a single upload. 0 uses the files package default.
+	UploadMaxBytes int64
 }
 
 // Load reads configuration from the environment (plus an optional .env file).
@@ -48,6 +59,8 @@ func Load() (Config, error) {
 		VAPIDPrivate:          os.Getenv("VAPID_PRIVATE_KEY"),
 		VAPIDSubject:          getenv("VAPID_SUBJECT", "mailto:admin@example.com"),
 		AllowOpenRegistration: os.Getenv("ALLOW_OPEN_REGISTRATION") == "true",
+		UploadDir:             os.Getenv("UPLOAD_DIR"),
+		UploadMaxBytes:        getenvInt64("UPLOAD_MAX_BYTES"),
 	}
 
 	if c.DatabaseURL == "" {
@@ -81,4 +94,15 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// getenvInt64 reads an integer setting. An unset or unparseable value yields 0,
+// which callers treat as "use the default" - a typo in an optional tuning knob
+// shouldn't stop the app from booting.
+func getenvInt64(key string) int64 {
+	n, err := strconv.ParseInt(os.Getenv(key), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }

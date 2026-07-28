@@ -8,7 +8,9 @@ help: ## Show this help
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 foundation-check: ## Build, vet and test the shared foundation module
-	go build ./... && go vet ./... && go test ./...
+	# -p 1: the integration tests in auth/ and files/ share one TEST_DATABASE_URL
+	# and each wipe `users` on setup, so their packages must not run in parallel.
+	go build ./... && go vet ./... && go test -p 1 ./...
 
 app-build: web-build ## Build & validate the reference app (embeds the SPA)
 	# Clear stale hashed assets (keep the tracked fallback + .gitignore).

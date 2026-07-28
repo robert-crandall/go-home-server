@@ -6,12 +6,14 @@
   import Home from './routes/Home.svelte';
   import Login from './routes/Login.svelte';
   import Notes from './routes/Notes.svelte';
+  import Photos from './routes/Photos.svelte';
   import Tokens from './routes/Tokens.svelte';
 
   const routes = {
     '/': Home,
     '/login': Login,
     '/notes': Notes,
+    '/photos': Photos,
     '/tokens': Tokens,
   };
 
