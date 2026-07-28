@@ -1,0 +1,4 @@
+# Uploaded files live here (bind-mounted into the container in production).
+# The directory is committed so a fresh clone can boot; its contents are not.
+*
+!.gitignore

@@ -10,5 +10,9 @@
 .env
 *.local
 
+# Uploaded files (the directory itself is tracked via uploads/.gitignore)
+/uploads/*
+!/uploads/.gitignore
+
 # OS / editor
 .DS_Store

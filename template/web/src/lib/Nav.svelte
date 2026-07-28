@@ -1,6 +1,6 @@
 <script lang="ts">
   import { link, push } from 'svelte-spa-router';
-  import { House, KeyRound, LogIn, LogOut, NotebookPen } from '@lucide/svelte';
+  import { House, Images, KeyRound, LogIn, LogOut, NotebookPen } from '@lucide/svelte';
   import { auth } from './auth.svelte';
 
   async function handleLogout() {
@@ -21,6 +21,10 @@
       <a class="btn btn-ghost btn-sm gap-1.5" href="/notes" use:link>
         <NotebookPen size={16} />
         <span class="sr-only sm:not-sr-only">Notes</span>
+      </a>
+      <a class="btn btn-ghost btn-sm gap-1.5" href="/photos" use:link>
+        <Images size={16} />
+        <span class="sr-only sm:not-sr-only">Photos</span>
       </a>
       <a class="btn btn-ghost btn-sm gap-1.5" href="/tokens" use:link>
         <KeyRound size={16} />

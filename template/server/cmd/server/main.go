@@ -11,6 +11,7 @@ import (
 	"github.com/robert-crandall/go-home-server/auth"
 	"github.com/robert-crandall/go-home-server/config"
 	"github.com/robert-crandall/go-home-server/db"
+	"github.com/robert-crandall/go-home-server/files"
 	"github.com/robert-crandall/go-home-server/notify"
 	"github.com/robert-crandall/go-home-server/server"
 
@@ -49,6 +50,17 @@ func main() {
 	}
 	notesSvc := notes.NewService(pool, notifySvc)
 
+	// A missing or unwritable upload directory is fatal on purpose: the
+	// alternative is writing photos to a container layer that gets thrown away
+	// on the next deploy. See docker-compose.yml for the bind mount.
+	filesSvc, err := files.NewService(pool, files.Options{
+		Dir:      cfg.UploadDir,
+		MaxBytes: cfg.UploadMaxBytes,
+	})
+	if err != nil {
+		log.Fatalf("files: %v", err)
+	}
+
 	srv := server.New(server.Options{
 		Title:       "Example App",
 		Version:     "1.0.0",
@@ -61,10 +73,12 @@ func main() {
 	// Register API operations on the shared huma API.
 	authSvc.Register(srv.API)
 	authSvc.RegisterTokens(srv.API) // /api/tokens + bearer auth for scripts/MCP
-	notify.Register(srv.API, notifySvc, func(ctx context.Context) (int64, error) {
+	currentUser := func(ctx context.Context) (int64, error) {
 		u, err := auth.RequireUser(ctx)
 		return u.ID, err
-	})
+	}
+	notify.Register(srv.API, notifySvc, currentUser)
+	files.Register(srv.API, filesSvc, currentUser)
 	notesSvc.Register(srv.API)
 
 	log.Printf("listening on %s (env=%s)", cfg.Addr, cfg.Env)
