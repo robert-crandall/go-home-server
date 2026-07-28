@@ -58,7 +58,7 @@ func main() {
 		MaxBytes: cfg.UploadMaxBytes,
 	})
 	if err != nil {
-		log.Fatalf("files: %v", err)
+		log.Fatal(err)
 	}
 
 	srv := server.New(server.Options{

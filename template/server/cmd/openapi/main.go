@@ -34,7 +34,7 @@ func main() {
 	// this runnable anywhere.
 	filesSvc, err := files.NewService(nil, files.Options{Dir: os.TempDir()})
 	if err != nil {
-		log.Fatalf("files: %v", err)
+		log.Fatal(err)
 	}
 	notesSvc := notes.NewService(nil, notifySvc)
 

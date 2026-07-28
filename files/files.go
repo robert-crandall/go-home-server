@@ -572,7 +572,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 // upload would otherwise sit in TempDir forever.
 func (s *Service) guardUpload(api huma.API, currentUser CurrentUserFunc) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
-		r, _ := humachi.Unwrap(ctx)
+		r, w := humachi.Unwrap(ctx)
 
 		defer func() {
 			if r.MultipartForm != nil {
@@ -594,8 +594,10 @@ func (s *Service) guardUpload(api huma.API, currentUser CurrentUserFunc) func(hu
 		// Backstop for chunked requests and clients that lie about
 		// Content-Length. Overflow surfaces as huma's generic 422 rather than a
 		// 413, because huma wraps multipart parse failures as plain validation
-		// errors; capping the bytes is the part that matters.
-		r.Body = http.MaxBytesReader(nil, r.Body, s.maxBytes)
+		// errors; capping the bytes is the part that matters. Passing the
+		// writer lets net/http mark the request too large and close the
+		// connection instead of trying to drain the rest of the body.
+		r.Body = http.MaxBytesReader(w, r.Body, s.maxBytes)
 
 		next(ctx)
 	}

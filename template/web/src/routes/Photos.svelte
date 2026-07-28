@@ -72,8 +72,11 @@
     files = files.filter((f) => f.id !== id);
   }
 
+  // Mirror the server's inline/attachment policy: it serves SVG as an
+  // attachment (an inline SVG can run script), so rendering it as an <img>
+  // here would just produce a broken thumbnail plus a download prompt.
   function isImage(contentType: string) {
-    return contentType.startsWith('image/');
+    return contentType.startsWith('image/') && contentType !== 'image/svg+xml';
   }
 
   function humanSize(bytes: number) {

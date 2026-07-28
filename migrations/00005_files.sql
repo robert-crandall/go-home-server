@@ -9,8 +9,9 @@ CREATE TABLE files (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
--- Listing a user's files newest-first is the only read pattern.
-CREATE INDEX files_user_id_created_at_idx ON files (user_id, created_at DESC);
+-- Listing a user's files newest-first is the only read pattern. id breaks
+-- created_at ties, so it belongs in the index or Postgres re-sorts.
+CREATE INDEX files_user_id_created_at_idx ON files (user_id, created_at DESC, id DESC);
 
 -- +goose Down
 DROP TABLE files;
