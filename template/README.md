@@ -49,6 +49,8 @@ make gen-api   # regenerate openapi.json from Go, then schema.d.ts from the spec
 ```
 
 Commit `server/openapi.json` and `web/src/lib/api/schema.d.ts` with your code.
+CI's `contract` job regenerates both and fails if what you committed is stale, so
+the client's types always match the server's handlers.
 
 ## Icons
 
