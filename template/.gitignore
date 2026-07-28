@@ -1,0 +1,14 @@
+# Go build output
+/bin/
+*.test
+
+# Node
+/web/node_modules/
+/web/dist/
+
+# Local env (never commit secrets)
+.env
+*.local
+
+# OS / editor
+.DS_Store

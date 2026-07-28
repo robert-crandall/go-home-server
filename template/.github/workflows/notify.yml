@@ -1,0 +1,242 @@
+# Post-build notifications for main.
+#
+# Fans out from the two main-line workflows via `workflow_run`:
+#   - "CI": notify Slack only when it is broken (failure / timed_out /
+#     startup_failure) on a push to main. A green or cancelled/skipped CI stays
+#     silent.
+#   - "Build and Publish Docker Image": announce whether an image was actually
+#     published, and ping Watchtower on a real publish so it pulls the new
+#     `latest` image and redeploys.
+#
+# Why we inspect the publish job instead of the workflow conclusion:
+# docker-publish.yml guards the publish (push + CI success + not superseded).
+# When that guard skips "Build and Push Image" (e.g. a superseded commit), the
+# wrapper workflow still concludes `success` even though nothing was published.
+# So a green wrapper conclusion is NOT proof of a publish — we query the actual
+# job conclusion and only announce / ping on a real success.
+#
+# Secrets are scoped per job (Slack in the `slack` job, Watchtower in the
+# `watchtower` job) so the third-party Slack action never sees the Watchtower
+# webhook, and vice versa. Both are guarded on the secret being set, so an
+# unconfigured webhook skips cleanly instead of failing.
+#
+# Like every `workflow_run` workflow, GitHub reads this trigger config from the
+# file on the default branch (main); the `branches` filter scopes it to main.
+#
+# This workflow ships with the go-home-server template and is INERT inside the
+# go-home-server repo itself (GitHub only runs workflows under the repo-root
+# .github). It becomes an app's notification pipeline once the template is
+# copied to its own repo by scripts/new-app.sh. To actually deliver anything,
+# the generated repo must set the SLACK_WEBHOOK and/or WATCHTOWER_WEBHOOK_URL
+# secrets; when unset, the respective job skips cleanly.
+
+name: Notify on Main Build Results
+
+on:
+  workflow_run:
+    workflows: ["CI", "Build and Publish Docker Image"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  slack:
+    name: Slack notification
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+    steps:
+      - name: Resolve notification
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NAME: ${{ github.event.workflow_run.name }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          notify=false
+          color=""
+          title=""
+          status_text=""
+
+          if [ "$NAME" == "CI" ]; then
+            # Only a main PUSH failure means "main is broken". CI also runs for
+            # pull_request, and a fork PR whose source branch is literally named
+            # main would match the branches filter, so require a push. `EVENT`
+            # here is the CI run's trigger. Cancellations/skips are intentional
+            # and stay silent; failure/timed_out/startup_failure all count as
+            # broken.
+            if [ "$EVENT" == "push" ]; then
+              case "$CONCLUSION" in
+                failure|timed_out|startup_failure)
+                  notify=true
+                  color="#FF0000"
+                  title="❌ ${REPO} - CI is broken on ${BRANCH}"
+                  status_text="CI concluded '${CONCLUSION}' on ${BRANCH}."
+                  ;;
+              esac
+            fi
+          elif [ "$NAME" == "Build and Publish Docker Image" ]; then
+            # A green wrapper conclusion does not mean an image was published, so
+            # look at the real publish job. The default shell runs with
+            # `set -e -o pipefail`, so guard the API call: a transient failure
+            # should skip gracefully, not red the job.
+            if ! job_conclusion="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs" \
+              --jq '.jobs[] | select(.name=="Build and Push Image") | .conclusion' 2>/dev/null)"; then
+              echo "::warning::Could not read publish job status for run ${RUN_ID}; falling back to wrapper conclusion."
+              job_conclusion=""
+            fi
+            case "$job_conclusion" in
+              success)
+                notify=true
+                color="#00FF00"
+                title="✅ ${REPO} - New image published from ${BRANCH}"
+                status_text="Build and Push Image succeeded on ${BRANCH}."
+                ;;
+              failure|timed_out|startup_failure)
+                notify=true
+                color="#FF0000"
+                title="❌ ${REPO} - Image publish failed on ${BRANCH}"
+                status_text="Build and Push Image concluded '${job_conclusion}' on ${BRANCH}."
+                ;;
+              *)
+                # The publish job never produced an actionable conclusion
+                # (skipped, or unreadable). A superseded/gated run leaves the
+                # wrapper green -> silent. But if the wrapper itself failed — e.g.
+                # the guard job errored before the image job ran — surface that so
+                # a real Docker failure isn't dropped.
+                case "$CONCLUSION" in
+                  failure|timed_out|startup_failure)
+                    notify=true
+                    color="#FF0000"
+                    title="❌ ${REPO} - Docker publish workflow failed on ${BRANCH}"
+                    status_text="Build and Publish Docker Image concluded '${CONCLUSION}' on ${BRANCH} before an image was published."
+                    ;;
+                esac
+                ;;
+            esac
+          fi
+
+          {
+            echo "notify=$notify"
+            echo "color=$color"
+            echo "title=$title"
+            echo "status_text=$status_text"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack notification
+        if: steps.resolve.outputs.notify == 'true' && env.SLACK_WEBHOOK != ''
+        uses: slackapi/slack-github-action@v3.0.5
+        continue-on-error: true
+        with:
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "${{ steps.resolve.outputs.title }}",
+              "attachments": [
+                {
+                  "color": "${{ steps.resolve.outputs.color }}",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "${{ steps.resolve.outputs.title }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "${{ steps.resolve.outputs.status_text }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Repository:*\n<${{ github.server_url }}/${{ github.repository }}|${{ github.repository }}>"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Workflow:*\n${{ github.event.workflow_run.name }} (${{ github.event.workflow_run.head_branch }})"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Triggered by:* ${{ github.event.workflow_run.actor.login }}"
+                      }
+                    },
+                    {
+                      "type": "actions",
+                      "elements": [
+                        {
+                          "type": "button",
+                          "text": {
+                            "type": "plain_text",
+                            "text": "View Workflow"
+                          },
+                          "url": "${{ github.event.workflow_run.html_url }}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  watchtower:
+    name: Watchtower ping
+    runs-on: ubuntu-latest
+    # Only the default branch moves the mutable `latest` tag, so a ping after a
+    # non-default publish would find nothing new to pull.
+    if: ${{ github.event.workflow_run.name == 'Build and Publish Docker Image' && github.event.workflow_run.head_branch == github.event.repository.default_branch }}
+    permissions:
+      actions: read
+      contents: read
+    env:
+      WATCHTOWER_WEBHOOK_URL: ${{ secrets.WATCHTOWER_WEBHOOK_URL }}
+    steps:
+      - name: Check the publish job actually succeeded
+        id: published
+        if: env.WATCHTOWER_WEBHOOK_URL != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          # A skipped/superseded publish still concludes the wrapper as success,
+          # so gate the ping on the real "Build and Push Image" job. The default
+          # shell runs with `set -e -o pipefail`, so guard the API call.
+          if ! job_conclusion="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs" \
+            --jq '.jobs[] | select(.name=="Build and Push Image") | .conclusion' 2>/dev/null)"; then
+            echo "::warning::Could not read publish job status for run ${RUN_ID}; skipping Watchtower."
+            job_conclusion=""
+          fi
+          if [ "$job_conclusion" == "success" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No image was published (publish job conclusion: '${job_conclusion:-none}'); skipping Watchtower."
+          fi
+
+      - name: Wait for image to propagate in registry
+        if: steps.published.outputs.ok == 'true'
+        run: sleep 60
+
+      - name: Notify Watchtower of new image
+        if: steps.published.outputs.ok == 'true'
+        continue-on-error: true
+        run: curl -fsS -X POST --max-time 5 "$WATCHTOWER_WEBHOOK_URL"

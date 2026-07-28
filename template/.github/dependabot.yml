@@ -1,0 +1,54 @@
+# Dependabot configuration for an app generated from this template.
+#
+# One check per ecosystem, weekly, with every update for that ecosystem rolled
+# into a single grouped PR (patterns: "*") so reviews stay batched instead of
+# arriving as a stream of one-off PRs.
+version: 2
+updates:
+  # Go module (server/go.mod + server/go.sum).
+  - package-ecosystem: gomod
+    directory: "/server"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+
+  # Frontend dependencies (web/package.json).
+  - package-ecosystem: bun
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      web-dependencies:
+        patterns:
+          - "*"
+
+  # GitHub Actions used by the workflows in .github/workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Base images referenced in the Dockerfile.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      docker:
+        patterns:
+          - "*"
