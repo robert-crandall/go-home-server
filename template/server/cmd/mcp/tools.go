@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robert-crandall-org/go-home-server/apiclient"
-	"github.com/robert-crandall-org/go-home-server/mcp"
+	"github.com/robert-crandall/go-home-server/apiclient"
+	"github.com/robert-crandall/go-home-server/mcp"
 )
 
 // apiClient lazily builds the authed HTTP client, once, from

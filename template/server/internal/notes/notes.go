@@ -14,8 +14,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/robert-crandall-org/go-home-server/auth"
-	"github.com/robert-crandall-org/go-home-server/notify"
+	"github.com/robert-crandall/go-home-server/auth"
+	"github.com/robert-crandall/go-home-server/notify"
 )
 
 // MigrationsFS holds this feature's own migrations, applied under the app's

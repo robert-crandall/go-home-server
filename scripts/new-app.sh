@@ -29,8 +29,8 @@ module="$2"
 foundation_path="${3:-}"
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-old_module="github.com/robert-crandall-org/example-app"
-foundation="github.com/robert-crandall-org/go-home-server"
+old_module="github.com/robert-crandall/example-app"
+foundation="github.com/robert-crandall/go-home-server"
 
 # Resolve the optional foundation path to an absolute path now, before we cd
 # into the new app (otherwise a relative path resolves against the wrong dir).

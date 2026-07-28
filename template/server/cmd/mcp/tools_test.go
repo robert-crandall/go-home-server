@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/robert-crandall-org/go-home-server/apiclient"
+	"github.com/robert-crandall/go-home-server/apiclient"
 )
 
 func TestListNotes(t *testing.T) {

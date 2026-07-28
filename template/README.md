@@ -1,6 +1,6 @@
 # Example App
 
-A reference app built on the [go-home-server](https://github.com/robert-crandall-org/go-home-server)
+A reference app built on the [go-home-server](https://github.com/robert-crandall/go-home-server)
 foundation. This is what `scripts/new-app.sh` copies to start a new app.
 
 ## Layout
@@ -157,7 +157,7 @@ Auth (sessions, cookies, middleware), web push, the pgx pool + migration runner,
 and the chi+huma server with embedded-SPA serving. Update it with:
 
 ```bash
-cd server && go get github.com/robert-crandall-org/go-home-server@latest && go mod tidy
+cd server && go get github.com/robert-crandall/go-home-server@latest && go mod tidy
 ```
 
 Delete `server/internal/notes` and build your own features the same way.

@@ -10,11 +10,11 @@ import (
 	"log"
 	"os"
 
-	"github.com/robert-crandall-org/go-home-server/auth"
-	"github.com/robert-crandall-org/go-home-server/notify"
-	"github.com/robert-crandall-org/go-home-server/server"
+	"github.com/robert-crandall/go-home-server/auth"
+	"github.com/robert-crandall/go-home-server/notify"
+	"github.com/robert-crandall/go-home-server/server"
 
-	"github.com/robert-crandall-org/example-app/internal/notes"
+	"github.com/robert-crandall/example-app/internal/notes"
 )
 
 func main() {

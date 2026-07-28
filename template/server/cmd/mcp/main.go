@@ -17,7 +17,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/robert-crandall-org/go-home-server/mcp"
+	"github.com/robert-crandall/go-home-server/mcp"
 )
 
 // version is stamped into the MCP initialize handshake; override at build time

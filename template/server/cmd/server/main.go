@@ -8,15 +8,15 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/robert-crandall-org/go-home-server/auth"
-	"github.com/robert-crandall-org/go-home-server/config"
-	"github.com/robert-crandall-org/go-home-server/db"
-	"github.com/robert-crandall-org/go-home-server/notify"
-	"github.com/robert-crandall-org/go-home-server/server"
+	"github.com/robert-crandall/go-home-server/auth"
+	"github.com/robert-crandall/go-home-server/config"
+	"github.com/robert-crandall/go-home-server/db"
+	"github.com/robert-crandall/go-home-server/notify"
+	"github.com/robert-crandall/go-home-server/server"
 
-	"github.com/robert-crandall-org/example-app/internal/app"
-	"github.com/robert-crandall-org/example-app/internal/notes"
-	"github.com/robert-crandall-org/example-app/internal/web"
+	"github.com/robert-crandall/example-app/internal/app"
+	"github.com/robert-crandall/example-app/internal/notes"
+	"github.com/robert-crandall/example-app/internal/web"
 )
 
 func main() {

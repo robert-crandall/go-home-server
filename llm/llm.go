@@ -62,7 +62,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robert-crandall-org/go-home-server/config"
+	"github.com/robert-crandall/go-home-server/config"
 )
 
 // ProviderID names a supported backend.
