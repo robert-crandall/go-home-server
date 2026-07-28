@@ -1,6 +1,0 @@
-**/node_modules
-web/dist
-server/internal/web/dist
-bin
-.env
-.git

@@ -1,21 +1,13 @@
-# Dependabot for the foundation repo itself: the root Go module, the reference
-# app under template/ (its own Go module + web deps + Dockerfile), and the
-# GitHub Actions in both workflow trees.
+# Dependabot for this repo: the Go module and the GitHub Actions used by its
+# workflows.
 #
-# Updates are grouped by language/tool into a single PR each, weekly. The Go
-# modules (root + template/server) and the GitHub Actions (root + template) each
-# collapse across directories into one grouped PR via the `directories` key, so
-# reviews stay batched instead of arriving as a stream of one-off PRs. Combined
-# with the dependabot-auto-merge workflow, these PRs merge themselves once CI is
-# green. The template ships its own .github/dependabot.yml so generated apps get
-# the same treatment.
+# Updates are grouped by ecosystem into a single PR each, weekly. Combined with
+# the dependabot-auto-merge workflow, these PRs merge themselves once CI is
+# green.
 version: 2
 updates:
-  # All Go modules in the repo (root shared module + reference app), in one PR.
   - package-ecosystem: gomod
-    directories:
-      - "/"
-      - "/template/server"
+    directory: "/"
     schedule:
       interval: weekly
       day: monday
@@ -25,40 +17,13 @@ updates:
         patterns:
           - "*"
 
-  # Reference app's frontend dependencies.
-  - package-ecosystem: bun
-    directory: "/template/web"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
-    groups:
-      web-dependencies:
-        patterns:
-          - "*"
-
-  # GitHub Actions across both workflow trees (this repo + the template), in one PR.
   - package-ecosystem: github-actions
-    directories:
-      - "/"
-      - "/template"
+    directory: "/"
     schedule:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
     groups:
       github-actions:
-        patterns:
-          - "*"
-
-  # Base images in the template Dockerfile.
-  - package-ecosystem: docker
-    directory: "/template"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
-    groups:
-      docker:
         patterns:
           - "*"

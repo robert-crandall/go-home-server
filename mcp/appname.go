@@ -13,7 +13,7 @@ import (
 // It exists so one name drives everything a user has to line up by hand:
 //
 //	MCP server name      AppName() + "-mcp"          (the initialize handshake)
-//	installed binary     $HOME/bin/<AppName()>-mcp   (make mcp-install)
+//	installed binary     $HOME/bin/<AppName()>-mcp   (wherever you install it)
 //	config file          ~/.config/<AppName()>.json  (apiclient.FromConfig)
 //
 // A /vN module suffix is dropped, so github.com/you/my-app/v2 is still "my-app".
