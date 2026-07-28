@@ -1,7 +1,6 @@
 // Package server bootstraps the HTTP layer shared by every app: a chi router,
 // a huma API (so handlers are typed and the OpenAPI spec is generated from Go),
-// serving of the embedded Svelte SPA with a deep-link fallback, and graceful
-// shutdown.
+// serving of an embedded SPA with a deep-link fallback, and graceful shutdown.
 //
 // The typical app flow:
 //
@@ -216,7 +215,7 @@ func spaHandler(dist fs.FS) http.HandlerFunc {
 // including through a CDN like Cloudflare that otherwise edge-caches .js/.css by
 // file extension. p is the request path with its leading slash trimmed.
 //
-// It assumes Vite's default build layout: content-hashed, immutable output lives
+// It assumes a Vite-style build layout: content-hashed, immutable output lives
 // under assets/ (a new build gives it a new filename), while everything else -
 // index.html, the service worker, the web manifest, icons - keeps a stable name
 // and so must always be revalidated. no-cache means "store but revalidate before

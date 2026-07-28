@@ -49,18 +49,6 @@ jobs:
             exit 0
           fi
 
-          # Don't auto-merge Docker base-image bumps: nothing in CI builds the
-          # image, so a green run doesn't actually validate them. (The template
-          # Dockerfile can't even build standalone in this repo - server/go.mod
-          # uses a `replace => ../../` on the foundation, and the build context
-          # is template/.) These open as PRs for a quick manual merge instead.
-          case "$BRANCH" in
-            dependabot/docker/*)
-              echo "Docker PR $BRANCH isn't validated by CI; leaving for manual review."
-              exit 0
-              ;;
-          esac
-
           # If main moved since CI ran, the tested merge is stale. Skip and let
           # the next CI run (Dependabot rebases) handle it, rather than merge an
           # untested combination into main.

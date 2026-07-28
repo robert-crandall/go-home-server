@@ -2,7 +2,8 @@
 //
 // The backend stores browser PushSubscription objects in Postgres and sends
 // notifications to them using the Web Push protocol with VAPID. The matching
-// frontend half (service worker + subscribe flow) lives in the template.
+// frontend half - a service worker plus a subscribe flow - is the app's to
+// write; this package covers the server side of it.
 //
 // Wiring in an app:
 //
@@ -98,10 +99,9 @@ type Payload struct {
 	Body  string `json:"body"`
 	URL   string `json:"url,omitempty"`
 	// Tag collapses notifications: a new one with the same tag replaces the
-	// previous on the lock screen instead of stacking. This only takes effect
-	// once the service worker passes tag through to showNotification; the
-	// template service worker does not yet do that, so wiring it through is
-	// deferred frontend work.
+	// previous on the lock screen instead of stacking. It only takes effect if
+	// the app's service worker passes tag through to showNotification, which is
+	// not something this package can do for you.
 	Tag string `json:"tag,omitempty"`
 }
 

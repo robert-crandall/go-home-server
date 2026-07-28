@@ -3,10 +3,6 @@
 /tmp/
 bin/
 
-# Node
-node_modules/
-template/web/dist/
-
 # Local env
 .env
 *.local

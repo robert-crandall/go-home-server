@@ -1,5 +1,0 @@
-# Built SPA assets are produced by `bun run build` and copied here by the
-# Docker/Makefile build. Only the fallback index.html is committed.
-/*
-!/.gitignore
-!/index.html

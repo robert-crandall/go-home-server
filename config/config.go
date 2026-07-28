@@ -39,8 +39,8 @@ type Config struct {
 	// default on purpose: in production this is a bind-mounted host directory,
 	// and guessing a path would mean silently writing to the container's
 	// ephemeral layer. An app that never constructs files.NewService can leave
-	// it empty; one that does - including the template, which always registers
-	// the file routes - should treat empty as a fatal misconfiguration.
+	// it empty; one that registers the file routes should treat empty as a
+	// fatal misconfiguration.
 	UploadDir string
 	// UploadMaxBytes caps a single upload. 0 uses the files package default.
 	UploadMaxBytes int64
