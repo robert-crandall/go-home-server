@@ -190,7 +190,8 @@ mcp.AddTool(s, "create_note", "Add a note.",
 Tool outputs must be object-shaped (a struct), so wrap slices in a struct rather
 than returning a bare slice.
 
-The binary is dual-mode:
+The binary is dual-mode. These run in **your app's** repo, where you defined
+`cmd/mcp` - the foundation ships the `mcp` package, not an MCP server binary:
 
 ```bash
 go run ./cmd/mcp list                 # list tools (no token needed)
@@ -207,6 +208,7 @@ rebuild whenever you change a tool. `mcp.AppName` assumes the convention
 `$HOME/bin/<app>-mcp`:
 
 ```bash
+# from your app repo
 go build -o "$HOME/bin/my-app-mcp" ./cmd/mcp
 ```
 

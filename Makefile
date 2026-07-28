@@ -12,8 +12,9 @@ foundation-check: ## Build, vet and test the module
 vapid: ## Generate a VAPID key pair for web push
 	go run ./cmd/vapid
 
-dev-db: ## Start a local Postgres for the integration tests
-	docker run -d --rm --name go-home-server-db \
-		-e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app \
-		-p 5432:5432 postgres:16-alpine
+dev-db: ## Start a local Postgres for the integration tests (no-op if already up)
+	@docker container inspect -f '{{.State.Running}}' go-home-server-db 2>/dev/null | grep -qx true || \
+		docker run -d --rm --name go-home-server-db \
+			-e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app \
+			-p 5432:5432 postgres:16-alpine
 	@echo 'export TEST_DATABASE_URL=postgres://app:app@localhost:5432/app?sslmode=disable'
