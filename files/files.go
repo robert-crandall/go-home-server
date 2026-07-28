@@ -44,6 +44,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -300,13 +301,38 @@ func sanitizeExt(filename string) string {
 	return "." + ext
 }
 
+// maxFilenameBytes bounds the stored display name. A hand-rolled client can
+// send a filename up to Go's 10 MB multipart header limit, which fits under the
+// body cap, and that name is echoed in a Content-Disposition header on every
+// download - measured, an 8 KB name percent-encodes into a 24 KB header. 255 is
+// the usual filesystem limit, so no real filename is affected. Cutting here can
+// leave a name with a truncated extension, which sanitizeExt then carries onto
+// the storage key; that only affects how the blob looks to a human browsing the
+// mounted folder, since the served content type comes from sniffing the bytes.
+const maxFilenameBytes = 255
+
 // displayName reduces a client-supplied filename to its base name for display.
 // Browsers send just a base name, but a hand-rolled client can send anything,
 // so normalize both separators and use path.Base (not filepath.Base, which is
-// a no-op on backslashes when the server runs on Linux).
+// a no-op on backslashes when the server runs on Linux). The result is forced
+// to valid UTF-8 because filename is a text column and Postgres rejects raw
+// bytes outright, and bounded because nothing else bounds it.
 func displayName(filename string) string {
 	name := path.Base(strings.ReplaceAll(filename, `\`, "/"))
 	if name == "" || name == "." || name == "/" {
+		return "upload"
+	}
+
+	name = strings.ToValidUTF8(name, "")
+	if len(name) > maxFilenameBytes {
+		// Cut on a rune boundary; a split rune would be invalid UTF-8 again.
+		cut := maxFilenameBytes
+		for cut > 0 && !utf8.RuneStart(name[cut]) {
+			cut--
+		}
+		name = name[:cut]
+	}
+	if name == "" {
 		return "upload"
 	}
 	return name
@@ -491,6 +517,20 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/files/{id}",
 		Summary:     "Download a file's contents",
 		Tags:        []string{"files"},
+		// huma can't infer a body schema from StreamResponse, so without this
+		// the spec claims the endpoint returns nothing. The runtime
+		// Content-Type is whatever was sniffed at upload; octet-stream is the
+		// standard way to say "arbitrary bytes" in a spec.
+		Responses: map[string]*huma.Response{
+			"200": {
+				Description: "The file's raw bytes. The response Content-Type is the type detected at upload time, not necessarily application/octet-stream.",
+				Content: map[string]*huma.MediaType{
+					"application/octet-stream": {
+						Schema: &huma.Schema{Type: "string", Format: "binary"},
+					},
+				},
+			},
+		},
 	}, func(ctx context.Context, in *struct {
 		ID int64 `path:"id"`
 	}) (*huma.StreamResponse, error) {

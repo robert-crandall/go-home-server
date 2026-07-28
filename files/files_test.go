@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSanitizeExt(t *testing.T) {
@@ -94,6 +95,39 @@ func TestDisplayName(t *testing.T) {
 		if got := displayName(in); got != want {
 			t.Errorf("displayName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// displayName is the only thing bounding the stored filename and forcing it to
+// valid UTF-8, and the boundary cases (an exact-limit name, a rune straddling
+// the cut, a name made entirely of continuation bytes) are awkward to reach
+// through the HTTP integration tests.
+func TestDisplayNameIsBoundedAndValidUTF8(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"exactly at the limit", strings.Repeat("a", maxFilenameBytes)},
+		{"one byte over", strings.Repeat("a", maxFilenameBytes+1)},
+		{"multibyte straddling the cut", strings.Repeat("é", maxFilenameBytes)},
+		{"invalid bytes", "photo\xff\xfe.jpg"},
+		{"only invalid bytes", "\xff\xfe\xfd"},
+		{"only continuation bytes", strings.Repeat("\x80", maxFilenameBytes+10)},
+		{"long and multibyte and invalid", strings.Repeat("日", 500) + "\xff"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := displayName(c.in)
+			if got == "" {
+				t.Fatal("displayName returned an empty name")
+			}
+			if len(got) > maxFilenameBytes {
+				t.Errorf("displayName returned %d bytes, want <= %d", len(got), maxFilenameBytes)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("displayName returned invalid UTF-8: %q", got)
+			}
+		})
 	}
 }
 

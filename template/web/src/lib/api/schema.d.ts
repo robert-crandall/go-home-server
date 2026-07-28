@@ -688,12 +688,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK */
+            /** @description The file's raw bytes. The response Content-Type is the type detected at upload time, not necessarily application/octet-stream. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/octet-stream": string;
+                };
             };
             /** @description Error */
             default: {

@@ -794,7 +794,16 @@
         ],
         "responses": {
           "200": {
-            "description": "OK"
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "contentMediaType": "application/octet-stream",
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file's raw bytes. The response Content-Type is the type detected at upload time, not necessarily application/octet-stream."
           },
           "default": {
             "content": {

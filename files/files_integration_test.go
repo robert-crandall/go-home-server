@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -499,5 +500,55 @@ func decodeJSON(t *testing.T, r io.Reader, v any) {
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		t.Fatalf("decode %q: %v", b, err)
+	}
+}
+
+// A hand-rolled client can send a filename up to Go's 10 MB multipart header
+// limit, which is well under the body cap. Unbounded, that name lands in a text
+// column and then in a Content-Disposition header on every download.
+func TestOversizedFilenameIsTruncated(t *testing.T) {
+	h := newHarness(t, 0)
+	h.userID = makeUser(t, h.pool, "longname@example.com")
+
+	long := strings.Repeat("é", 4000) + ".jpg"
+	resp := h.upload(long, []byte("hello"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201: %s", resp.StatusCode, readAll(t, resp.Body))
+	}
+	var f File
+	decodeJSON(t, resp.Body, &f)
+
+	if len(f.Filename) > 255 {
+		t.Errorf("stored filename is %d bytes, want <= 255", len(f.Filename))
+	}
+	if !utf8.ValidString(f.Filename) {
+		t.Errorf("stored filename is not valid UTF-8: %q", f.Filename)
+	}
+
+	dl := h.get(fmt.Sprintf("/api/files/%d", f.ID))
+	defer dl.Body.Close()
+	// RFC 5987 percent-encoding inflates a non-ASCII name roughly 3x, so the
+	// header is bounded by a small constant multiple of maxFilenameBytes.
+	if got := len(dl.Header.Get("Content-Disposition")); got > 4*maxFilenameBytes {
+		t.Errorf("Content-Disposition is %d bytes, want a bounded header", got)
+	}
+}
+
+// Postgres rejects invalid UTF-8 in a text column, so a hand-rolled client that
+// puts raw bytes in the multipart filename must not turn into a 500.
+func TestInvalidUTF8FilenameIsAccepted(t *testing.T) {
+	h := newHarness(t, 0)
+	h.userID = makeUser(t, h.pool, "badname@example.com")
+
+	resp := h.upload("photo\xff\xfe.jpg", []byte("hello"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201: %s", resp.StatusCode, readAll(t, resp.Body))
+	}
+	var f File
+	decodeJSON(t, resp.Body, &f)
+	if !utf8.ValidString(f.Filename) {
+		t.Errorf("stored filename is not valid UTF-8: %q", f.Filename)
 	}
 }
