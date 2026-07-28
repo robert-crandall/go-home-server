@@ -16,14 +16,15 @@
 # require a required-status-check merge blocker on main, which would also block
 # direct pushes to main.
 #
-# Deploy note: this merges with the built-in GITHUB_TOKEN, and GitHub suppresses
+# Build note: this merges with the built-in GITHUB_TOKEN, and GitHub suppresses
 # all workflow triggers from GITHUB_TOKEN-authored events. So the merge commit
-# does NOT kick the push-triggered CI -> docker-publish -> Watchtower chain; an
-# auto-merged dependency update lands on main and ships with the next push to
-# main (which rebuilds the image including it). That's an intentional trade to
-# keep the No-PAT model (docker-publish.yml is explicitly PAT-free). If you want
-# each dependency update deployed immediately, do the merge with a GitHub App or
-# PAT token instead of GITHUB_TOKEN and the normal push pipeline will fire.
+# does NOT kick the push-triggered CI -> docker-publish chain; an auto-merged
+# dependency update lands on main without publishing an image, and is first
+# included in the next normal publish (the next push to main). That's an
+# intentional trade to keep the No-PAT model (docker-publish.yml is explicitly
+# PAT-free). If you want every dependency update to publish an image
+# immediately, do the merge with a GitHub App or PAT token instead of
+# GITHUB_TOKEN and the normal push pipeline will fire.
 name: Dependabot auto-merge
 
 on:

@@ -4,8 +4,8 @@
 # (packages: write) to push to ghcr.io/<owner>/<repo>.
 #
 # Tags emitted:
-#   - `latest`          mutable, only from the default branch (what Watchtower
-#                       watches for a live redeploy — see notify.yml)
+#   - `latest`          mutable, only ever moved by the default branch, so
+#                       whatever pulls `latest` on your host tracks main
 #   - `main-<short-sha>` immutable, one per built commit for traceability
 #
 # Trigger: gated behind CI. It runs only after the `CI` workflow COMPLETES, and
