@@ -94,8 +94,14 @@ app. The root `.github/workflows/ci.yml` is this repo's own CI.
   refuses to create it, so forgetting the bind mount is a startup crash instead
   of photos quietly written to a container layer that's discarded on the next
   deploy. `UPLOAD_MAX_BYTES` caps a single upload request body (25 MiB by
-  default). There's
-  no thumbnailing, dedup, or quota - the volume's size is the quota.
+  default). Every image the server can decode - JPEG, PNG, GIF, WebP - also
+  gets a 512 px JPEG thumbnail written beside it at upload time, served from
+  `GET /api/files/{id}/thumbnail`, so a photo grid loads kilobytes instead of
+  megabytes; `hasThumbnail` on the file tells the client which URL to use.
+  HEIC and AVIF don't get one (decoding them needs cgo or a wasm blob, and
+  neither belongs in a distroless image) and neither do files that were
+  uploaded before this existed - both fall back to the original. There's no
+  dedup or quota - the volume's size is the quota.
 - **Notifications** - store browser push subscriptions and send Web Push with
   VAPID. `notify.Send(ctx, userID, payload)` from anywhere. The template ships
   the frontend half (service worker + subscribe flow).

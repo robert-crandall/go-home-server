@@ -13,13 +13,16 @@
 //	    return u.ID, err
 //	})
 //
+// Images we can decode also get a small JPEG thumbnail stored beside the
+// original (see thumb.go), so a photo grid doesn't pull down full-size photos.
+//
 // Deliberate non-goals: no S3/storage abstraction (one implementation is not an
-// interface), no thumbnails, no dedup, no per-user quota (the volume's size is
-// the quota), and no orphan reconciliation. Save cleans up after every handled
-// copy or insert error, so it never leaves a stray blob or a row without one.
-// Orphaned blobs are still possible: Delete drops the row before unlinking, so
-// a failed unlink leaks one, and a hard crash leaks one per operation in flight
-// (a partial .tmp-* mid-copy, a finished blob between rename and insert, or an
+// interface), no dedup, no per-user quota (the volume's size is the quota), and
+// no orphan reconciliation. Save cleans up after every handled copy or insert
+// error, so it never leaves a stray blob or a row without one. Orphaned blobs
+// are still possible: Delete drops the row before unlinking, so a failed unlink
+// leaks one, and a hard crash leaks one per operation in flight (a partial
+// .tmp-* mid-copy, a finished blob between rename and insert, or an
 // already-unrowed blob between delete and unlink). That costs disk and nothing
 // else, and is not worth a background reaper in a home server.
 //
@@ -132,6 +135,10 @@ type File struct {
 	ContentType string    `json:"contentType"`
 	Size        int64     `json:"size"`
 	CreatedAt   time.Time `json:"createdAt"`
+	// HasThumbnail reports whether GET /api/files/{id}/thumbnail will serve
+	// something. It is false for formats we can't decode and for files stored
+	// before thumbnails existed; clients fall back to the original.
+	HasThumbnail bool `json:"hasThumbnail"`
 }
 
 // ErrNotFound is returned when a file doesn't exist or belongs to another user.
@@ -142,7 +149,7 @@ var ErrNotFound = errors.New("files: not found")
 // List returns a user's files, newest first.
 func (s *Service) List(ctx context.Context, userID int64) ([]File, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, filename, content_type, size_bytes, created_at
+		`SELECT id, filename, content_type, size_bytes, created_at, has_thumbnail
 		   FROM files WHERE user_id = $1 ORDER BY created_at DESC, id DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -152,7 +159,7 @@ func (s *Service) List(ctx context.Context, userID int64) ([]File, error) {
 	out := []File{}
 	for rows.Next() {
 		var f File
-		if err := rows.Scan(&f.ID, &f.Filename, &f.ContentType, &f.Size, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.Filename, &f.ContentType, &f.Size, &f.CreatedAt, &f.HasThumbnail); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
@@ -191,21 +198,26 @@ func (s *Service) Save(ctx context.Context, userID int64, filename string, r io.
 		return File{}, fmt.Errorf("files: store: %w", err)
 	}
 
-	f := File{Filename: displayName(filename), ContentType: contentType, Size: size}
+	// Before the insert, so has_thumbnail is only ever true for a thumbnail
+	// already renamed into place - the row can't outrun the blob.
+	hasThumb := s.writeThumbnail(key, contentType)
+
+	f := File{Filename: displayName(filename), ContentType: contentType, Size: size, HasThumbnail: hasThumb}
 	err = s.db.QueryRow(ctx,
-		`INSERT INTO files (user_id, storage_key, filename, content_type, size_bytes)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
-		userID, key, f.Filename, f.ContentType, f.Size,
+		`INSERT INTO files (user_id, storage_key, filename, content_type, size_bytes, has_thumbnail)
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
+		userID, key, f.Filename, f.ContentType, f.Size, f.HasThumbnail,
 	).Scan(&f.ID, &f.CreatedAt)
 	if err != nil {
-		// The blob is unreferenced now, so drop it rather than leak it.
+		// Both blobs are unreferenced now, so drop them rather than leak them.
 		_ = os.Remove(dstPath)
+		_ = s.removeThumbnail(key)
 		return File{}, err
 	}
 	return f, nil
 }
 
-// Delete removes a user's file, row first. If the unlink fails the row is
+// Delete removes a user's file, row first. If an unlink fails the row is
 // already gone, which is the right way round: the app never shows a broken
 // entry, and the worst case is one orphaned blob.
 func (s *Service) Delete(ctx context.Context, userID, id int64) error {
@@ -219,52 +231,96 @@ func (s *Service) Delete(ctx context.Context, userID, id int64) error {
 	if err != nil {
 		return err
 	}
+
+	// Both unlinks are attempted even if the first fails, so one failure can't
+	// strand the other blob forever.
+	var blobErr error
 	if err := os.Remove(filepath.Join(s.dir, key)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("files: delete blob: %w", err)
+		blobErr = fmt.Errorf("files: delete blob: %w", err)
 	}
-	return nil
+	return errors.Join(blobErr, s.removeThumbnail(key))
+}
+
+// meta fetches a user's file row along with its storage key. A file that
+// doesn't exist and one owned by someone else are deliberately the same error.
+func (s *Service) meta(ctx context.Context, userID, id int64) (File, string, error) {
+	var f File
+	var key string
+	err := s.db.QueryRow(ctx,
+		`SELECT id, storage_key, filename, content_type, size_bytes, created_at, has_thumbnail
+		   FROM files WHERE id = $1 AND user_id = $2`, id, userID,
+	).Scan(&f.ID, &key, &f.Filename, &f.ContentType, &f.Size, &f.CreatedAt, &f.HasThumbnail)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return File{}, "", ErrNotFound
+	}
+	if err != nil {
+		return File{}, "", err
+	}
+	return f, key, nil
+}
+
+// openBlob opens one blob belonging to an already-fetched row. The caller
+// closes the handle.
+func (s *Service) openBlob(ctx context.Context, userID, id int64, name string) (*os.File, error) {
+	fh, err := os.Open(filepath.Join(s.dir, name))
+	if err == nil {
+		return fh, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("files: open blob: %w", err)
+	}
+
+	// Either a concurrent delete landed between the query and the open (the row
+	// is gone too - a real 404), or the row outlived its blob, which means the
+	// upload directory is damaged or unmounted. Those must not look alike: the
+	// first is normal, the second is the kind of storage failure NewService
+	// refuses to start on. Deliberately not %w-wrapping the *fs.PathError: huma
+	// returns error text to the client, and the path is the only thing the wrap
+	// would add - the branch condition already says it was ENOENT.
+	var exists bool
+	qerr := s.db.QueryRow(ctx,
+		`SELECT true FROM files WHERE id = $1 AND user_id = $2`, id, userID,
+	).Scan(&exists)
+	if errors.Is(qerr, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if qerr != nil {
+		return nil, fmt.Errorf("files: recheck missing blob for file %d: %w", id, qerr)
+	}
+	return nil, fmt.Errorf("files: blob %s for file %d is missing from the upload directory", name, id)
 }
 
 // open returns an open handle to a user's file plus its metadata. The caller
 // closes the handle.
 func (s *Service) open(ctx context.Context, userID, id int64) (*os.File, File, error) {
-	var f File
-	var key string
-	err := s.db.QueryRow(ctx,
-		`SELECT id, storage_key, filename, content_type, size_bytes, created_at
-		   FROM files WHERE id = $1 AND user_id = $2`, id, userID,
-	).Scan(&f.ID, &key, &f.Filename, &f.ContentType, &f.Size, &f.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, File{}, ErrNotFound
-	}
+	f, key, err := s.meta(ctx, userID, id)
 	if err != nil {
 		return nil, File{}, err
 	}
-
-	fh, err := os.Open(filepath.Join(s.dir, key))
+	fh, err := s.openBlob(ctx, userID, id, key)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// Either a concurrent delete landed between the query and the open
-			// (the row is gone too - a real 404), or the row outlived its blob,
-			// which means the upload directory is damaged or unmounted. Those
-			// must not look alike: the first is normal, the second is the kind
-			// of storage failure NewService refuses to start on. Deliberately
-			// not %w-wrapping the *fs.PathError: huma returns error text to the
-			// client, and the path is the only thing the wrap would add - the
-			// branch condition already says it was ENOENT.
-			var exists bool
-			qerr := s.db.QueryRow(ctx,
-				`SELECT true FROM files WHERE id = $1 AND user_id = $2`, id, userID,
-			).Scan(&exists)
-			if errors.Is(qerr, pgx.ErrNoRows) {
-				return nil, File{}, ErrNotFound
-			}
-			if qerr != nil {
-				return nil, File{}, fmt.Errorf("files: recheck missing blob for file %d: %w", id, qerr)
-			}
-			return nil, File{}, fmt.Errorf("files: blob %s for file %d is missing from the upload directory", key, id)
-		}
-		return nil, File{}, fmt.Errorf("files: open blob: %w", err)
+		return nil, File{}, err
+	}
+	return fh, f, nil
+}
+
+// openThumb returns an open handle to a user's thumbnail. A file that has no
+// thumbnail is ErrNotFound - the client is expected to fall back to the
+// original, which File.HasThumbnail already told it about.
+func (s *Service) openThumb(ctx context.Context, userID, id int64) (*os.File, File, error) {
+	f, key, err := s.meta(ctx, userID, id)
+	if err != nil {
+		return nil, File{}, err
+	}
+	if !f.HasThumbnail {
+		return nil, File{}, ErrNotFound
+	}
+	// has_thumbnail is only ever written once, at insert, so a missing blob
+	// here can only mean a concurrent delete or a damaged directory - the same
+	// two cases openBlob already tells apart.
+	fh, err := s.openBlob(ctx, userID, id, thumbName(key))
+	if err != nil {
+		return nil, File{}, err
 	}
 	return fh, f, nil
 }
@@ -388,13 +444,19 @@ func isoBrand(head []byte) string {
 	return strings.ToLower(string(head[8:12]))
 }
 
+// baseMediaType strips any parameters from a media type and normalizes case,
+// turning "text/plain; charset=utf-8" into "text/plain".
+func baseMediaType(contentType string) string {
+	base, _, _ := strings.Cut(contentType, ";")
+	return strings.TrimSpace(strings.ToLower(base))
+}
+
 // contentDisposition decides whether a file renders in the browser or
 // downloads. Only media types that can't execute script on this origin are
 // inlined - an uploaded .html served inline would be stored XSS, and this
 // foundation supports open registration, so multiple users can share an origin.
 func contentDisposition(contentType, filename string) string {
-	base, _, _ := strings.Cut(contentType, ";")
-	base = strings.TrimSpace(strings.ToLower(base))
+	base := baseMediaType(contentType)
 
 	// SVG is an image that can execute script, so it must never inline.
 	inline := base != "image/svg+xml" &&
@@ -545,28 +607,46 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		if err != nil {
 			return nil, err
 		}
+		return streamBlob(fh, meta, meta.ContentType,
+			contentDisposition(meta.ContentType, meta.Filename)), nil
+	})
 
-		return &huma.StreamResponse{Body: func(hctx huma.Context) {
-			defer fh.Close()
-			r, w := humachi.Unwrap(hctx)
-			w.Header().Set("Content-Type", meta.ContentType)
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Content-Disposition", contentDisposition(meta.ContentType, meta.Filename))
-			// A given id's bytes never change, but the response is per-user and
-			// deletable, so it must NOT be cached without revalidation: browser
-			// caches key on URL, not on session, so an `immutable` blob would
-			// still be readable after logging out and back in as someone else,
-			// and a deleted photo would linger client-side. `no-cache` still
-			// gets the bandwidth win - the revalidation re-enters this handler,
-			// passes the auth and ownership checks, and ServeContent answers
-			// 304 from Last-Modified.
-			w.Header().Set("Cache-Control", "private, no-cache")
-			// ServeContent gives Range support (Safari's <video> requires it)
-			// and conditional GETs. huma runs this func before writing status
-			// or headers, so its 206/304 responses land intact. The modtime
-			// must be non-zero or If-Modified-Since is skipped entirely.
-			http.ServeContent(w, r, meta.Filename, meta.CreatedAt, fh)
-		}}, nil
+	huma.Register(api, huma.Operation{
+		OperationID: "download-file-thumbnail",
+		Method:      http.MethodGet,
+		Path:        "/api/files/{id}/thumbnail",
+		Summary:     "Download a file's thumbnail",
+		Description: "Serves a small JPEG preview. 404 when the file has no thumbnail - check hasThumbnail and fall back to the full file.",
+		Tags:        []string{"files"},
+		// Same reason as download-file: StreamResponse carries no inferable
+		// schema. This one is always a JPEG.
+		Responses: map[string]*huma.Response{
+			"200": {
+				Description: "The thumbnail's raw JPEG bytes.",
+				Content: map[string]*huma.MediaType{
+					"image/jpeg": {
+						Schema: &huma.Schema{Type: "string", Format: "binary"},
+					},
+				},
+			},
+		},
+	}, func(ctx context.Context, in *struct {
+		ID int64 `path:"id"`
+	}) (*huma.StreamResponse, error) {
+		userID, err := currentUser(ctx)
+		if err != nil {
+			return nil, err
+		}
+		fh, meta, err := svc.openThumb(ctx, userID, in.ID)
+		if errors.Is(err, ErrNotFound) {
+			return nil, huma.Error404NotFound("thumbnail not found")
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Always inline: it's a JPEG we generated, so it can't be the stored
+		// XSS case contentDisposition guards against.
+		return streamBlob(fh, meta, thumbContentType, "inline"), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -590,6 +670,32 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		}
 		return &struct{}{}, nil
 	})
+}
+
+// streamBlob builds the response that streams an open blob to the client. The
+// handle is closed when the body has been written.
+func streamBlob(fh *os.File, meta File, contentType, disposition string) *huma.StreamResponse {
+	return &huma.StreamResponse{Body: func(hctx huma.Context) {
+		defer fh.Close()
+		r, w := humachi.Unwrap(hctx)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Disposition", disposition)
+		// A given id's bytes never change, but the response is per-user and
+		// deletable, so it must NOT be cached without revalidation: browser
+		// caches key on URL, not on session, so an `immutable` blob would still
+		// be readable after logging out and back in as someone else, and a
+		// deleted photo would linger client-side. `no-cache` still gets the
+		// bandwidth win - the revalidation re-enters the handler, passes the
+		// auth and ownership checks, and ServeContent answers 304 from
+		// Last-Modified.
+		w.Header().Set("Cache-Control", "private, no-cache")
+		// ServeContent gives Range support (Safari's <video> requires it) and
+		// conditional GETs. huma runs this func before writing status or
+		// headers, so its 206/304 responses land intact. The modtime must be
+		// non-zero or If-Modified-Since is skipped entirely.
+		http.ServeContent(w, r, meta.Filename, meta.CreatedAt, fh)
+	}}
 }
 
 // guardUpload builds the upload operation's middleware: it rejects anonymous

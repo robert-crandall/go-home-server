@@ -11,6 +11,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pressly/goose/v3 v3.27.2
 	golang.org/x/crypto v0.54.0
+	golang.org/x/image v0.44.0
 )
 
 require (

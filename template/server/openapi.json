@@ -286,6 +286,9 @@
           "filename": {
             "type": "string"
           },
+          "hasThumbnail": {
+            "type": "boolean"
+          },
           "id": {
             "format": "int64",
             "type": "integer"
@@ -300,7 +303,8 @@
           "filename",
           "contentType",
           "size",
-          "createdAt"
+          "createdAt",
+          "hasThumbnail"
         ],
         "type": "object"
       },
@@ -817,6 +821,51 @@
           }
         },
         "summary": "Download a file's contents",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/api/files/{id}/thumbnail": {
+      "get": {
+        "description": "Serves a small JPEG preview. 404 when the file has no thumbnail - check hasThumbnail and fall back to the full file.",
+        "operationId": "download-file-thumbnail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "contentMediaType": "application/octet-stream",
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The thumbnail's raw JPEG bytes."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Download a file's thumbnail",
         "tags": [
           "files"
         ]

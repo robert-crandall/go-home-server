@@ -79,6 +79,13 @@
     return contentType.startsWith('image/') && contentType !== 'image/svg+xml';
   }
 
+  // The server generates a thumbnail for every format it can decode. Anything
+  // it can't - HEIC straight off an iPhone, AVIF, anything corrupt - falls
+  // back to the original, which is slow but correct.
+  function tileSrc(file: { id: number; hasThumbnail: boolean }) {
+    return file.hasThumbnail ? `/api/files/${file.id}/thumbnail` : `/api/files/${file.id}`;
+  }
+
   function humanSize(bytes: number) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -122,7 +129,7 @@
           {#if isImage(file.contentType)}
             <img
               class="aspect-square w-full object-cover"
-              src="/api/files/{file.id}"
+              src={tileSrc(file)}
               alt={file.filename}
               loading="lazy"
             />
