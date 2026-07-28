@@ -55,6 +55,14 @@ The `/photos` page is a working example - see `web/src/routes/Photos.svelte`.
 Uploads use plain `fetch` with `FormData` (openapi-fetch has no multipart
 story); listing and deleting go through the typed client like everything else.
 
+The grid loads `GET /api/files/{id}/thumbnail` - a 512 px JPEG the server
+generates at upload time for any image it can decode (JPEG, PNG, GIF, WebP),
+stored beside the original. When a file has no thumbnail the grid falls back to
+the full image, which is what happens for HEIC and AVIF (decoding those needs
+cgo or a wasm blob, so the distroless image doesn't) and for anything uploaded
+before the feature existed - there's no backfill. Check `hasThumbnail` on the
+file rather than guessing from the content type.
+
 ## The API-first loop
 
 The OpenAPI spec is the contract between server and client.
