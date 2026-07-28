@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/robert-crandall-org/go-home-server/config"
+	"github.com/robert-crandall/go-home-server/config"
 )
 
 // FileConfig is the on-disk shape of ~/.config/<name>.json - the standing

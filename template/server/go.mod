@@ -1,15 +1,15 @@
 // This module is the reference application shipped with the go-home-server
 // foundation. scripts/new-app.sh generates new apps from it, rewriting the
-// module path (github.com/robert-crandall-org/example-app) and replacing the
+// module path (github.com/robert-crandall/example-app) and replacing the
 // in-repo `replace` below with a real dependency on the foundation.
-module github.com/robert-crandall-org/example-app
+module github.com/robert-crandall/example-app
 
 go 1.26
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/robert-crandall-org/go-home-server v0.0.0
+	github.com/robert-crandall/go-home-server v0.0.0
 )
 
 require (
@@ -38,4 +38,4 @@ require (
 
 // Develop the app against the foundation living in this same repository.
 // Remove this when the app lives in its own repo.
-replace github.com/robert-crandall-org/go-home-server => ../../
+replace github.com/robert-crandall/go-home-server => ../../

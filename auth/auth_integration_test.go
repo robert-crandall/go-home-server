@@ -9,8 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/robert-crandall-org/go-home-server/db"
-	"github.com/robert-crandall-org/go-home-server/migrations"
+	"github.com/robert-crandall/go-home-server/db"
+	"github.com/robert-crandall/go-home-server/migrations"
 )
 
 // These tests need a real Postgres. They skip cleanly when TEST_DATABASE_URL is

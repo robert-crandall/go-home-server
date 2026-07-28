@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/robert-crandall-org/go-home-server/notify"
+	"github.com/robert-crandall/go-home-server/notify"
 )
 
 func main() {

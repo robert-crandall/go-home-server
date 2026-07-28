@@ -112,7 +112,7 @@ func TestMCPInstallDefaultBinIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
-	// template/server's module path is github.com/robert-crandall-org/example-app,
+	// template/server's module path is github.com/robert-crandall/example-app,
 	// which is what new-app.sh rewrites when it scaffolds a real app.
 	want := filepath.Join(home, "bin", "example-app-mcp")
 

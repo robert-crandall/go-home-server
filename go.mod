@@ -1,4 +1,4 @@
-module github.com/robert-crandall-org/go-home-server
+module github.com/robert-crandall/go-home-server
 
 go 1.26
 

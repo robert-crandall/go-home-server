@@ -2,10 +2,10 @@
 package app
 
 import (
-	"github.com/robert-crandall-org/go-home-server/db"
-	shared "github.com/robert-crandall-org/go-home-server/migrations"
+	"github.com/robert-crandall/go-home-server/db"
+	shared "github.com/robert-crandall/go-home-server/migrations"
 
-	"github.com/robert-crandall-org/example-app/internal/notes"
+	"github.com/robert-crandall/example-app/internal/notes"
 )
 
 // Migrate applies the foundation's shared migrations followed by the app's own

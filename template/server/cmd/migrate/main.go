@@ -5,9 +5,9 @@ package main
 import (
 	"log"
 
-	"github.com/robert-crandall-org/go-home-server/config"
+	"github.com/robert-crandall/go-home-server/config"
 
-	"github.com/robert-crandall-org/example-app/internal/app"
+	"github.com/robert-crandall/example-app/internal/app"
 )
 
 func main() {
