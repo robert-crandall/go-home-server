@@ -9,15 +9,10 @@ an imported dependency. Apps `go get` it and pick up fixes with `go get -u`.
 
 The layer you can't import - the Svelte SPA, the service worker, the PWA manifest
 and iOS icons, the Vite/Tailwind config, the Dockerfile, the compose file, the
-CI/CD workflows - used to live here under `template/`. It has been extracted so
-this repo stays a clean vendorable dependency; it will get its own repo. The last
-commit that contained it is `6a88e3f`, so until then:
+CI/CD workflows - belongs to each app, not here. Keeping it out is what makes
+this repo a clean vendorable dependency.
 
-```bash
-git checkout 6a88e3f -- template scripts/new-app.sh
-```
-
-What's left here still can't silently rot: `examples/minimal` is a complete app
+What's here still can't silently rot: `examples/minimal` is a complete app
 that CI compiles, and `internal/wiring` mounts every endpoint this module offers
 onto one huma API so a cross-package break fails the build.
 
@@ -459,9 +454,8 @@ uploads at all, drop the `files` service and its `Register` call instead of
 setting `UPLOAD_DIR`.
 
 The app-side layer - Svelte SPA, service worker, PWA icons, Dockerfile, compose,
-CI/CD - will live in a separate repo. That repo doesn't exist yet; for now,
-recover the old in-repo template from git history using the command at the top
-of this file.
+CI/CD - is yours to write. This module serves whatever `fs.FS` you hand
+`server.Options.SPA` and has no opinion about how you build it.
 
 ## Validation
 
@@ -488,14 +482,13 @@ cross-package break - an operation-ID collision, say - which no single-package
 test can see, and it needs no database. Fail-first verified: renaming one
 operation to collide with another does fail it.
 
-The MCP install path was verified when the app template lived here: scaffold an
-app, install the binary, then drive it against the running app with nothing but
+The MCP install path was verified end to end against a real app built on this
+module: build the binary, install it, then drive it with nothing but
 `~/.config/<app>.json` - `create_note` then `list_notes` round-tripped through
 the real API. Precedence was checked live too: an `MCP_APP_URL` env var beats
 the config file, a stale `.env` in the app checkout does not, and with no config
-file that `.env` is still honored. Those runs predate the split; the `mcp` and
-`apiclient` packages themselves are unchanged and still covered by their own
-tests.
+file that `.env` is still honored. The `mcp` and `apiclient` packages are covered
+by their own tests on top of that.
 
 **Not** verified here: the `llm` package against live APIs. Its wire formats
 (endpoints, auth headers, `max_completion_tokens` vs `max_tokens`, Anthropic's
