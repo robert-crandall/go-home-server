@@ -466,38 +466,6 @@ make foundation-check   # go build/vet/test on the module
 Integration tests are gated on `TEST_DATABASE_URL`; `make dev-db` starts a
 Postgres and prints the export line.
 
-## Status / honesty
-
-Verified locally against a real Postgres: migrations (including that two
-migration sources with colliding version numbers stay isolated by version
-table), register -> me -> logout, the push endpoints, the first-user-only
-registration gate (including a concurrent-registration test), the file
-upload/download/thumbnail endpoints, unknown `/api` paths returning JSON 404,
-and the embedded SPA (real build served, deep links fall back to index.html,
-manifest / service worker / icons all served with correct content types).
-
-`internal/wiring` mounts auth, API tokens, notifications, and files on one huma
-API and marshals the resulting OpenAPI spec. That's the check that catches a
-cross-package break - an operation-ID collision, say - which no single-package
-test can see, and it needs no database. Fail-first verified: renaming one
-operation to collide with another does fail it.
-
-The MCP install path was verified end to end against a real app built on this
-module: build the binary, install it, then drive it with nothing but
-`~/.config/<app>.json` - `create_note` then `list_notes` round-tripped through
-the real API. Precedence was checked live too: an `MCP_APP_URL` env var beats
-the config file, a stale `.env` in the app checkout does not, and with no config
-file that `.env` is still honored. The `mcp` and `apiclient` packages are covered
-by their own tests on top of that.
-
-**Not** verified here: the `llm` package against live APIs. Its wire formats
-(endpoints, auth headers, `max_completion_tokens` vs `max_tokens`, Anthropic's
-top-level `system` field and typed content blocks, and both SSE streaming
-formats) were checked against each vendor's current documentation, and the
-request/response handling is covered by `httptest` servers - but no real call to
-OpenAI, Anthropic, or xAI was made, because this environment has no API keys.
-Make one real call per provider, blocking and streaming, before depending on it.
-
 ## Acknowledged, not fixed
 
 The bar for this repo is single-user homelab software on a private network. A
