@@ -504,3 +504,18 @@ formats) were checked against each vendor's current documentation, and the
 request/response handling is covered by `httptest` servers - but no real call to
 OpenAI, Anthropic, or xAI was made, because this environment has no API keys.
 Make one real call per provider, blocking and streaming, before depending on it.
+
+## Acknowledged, not fixed
+
+The bar for this repo is single-user homelab software on a private network. A
+failure mode that needs a hostile party already inside the LAN, or that I can
+undo by re-registering, gets a line here instead of code. Please don't "fix"
+these - if you think one has actually become a problem, say so and make the case.
+
+- **The first-user registration window.** With `ALLOW_OPEN_REGISTRATION` unset,
+  `POST /api/auth/register` is open from the moment the app is reachable until
+  the first account exists. The gate is also recomputed per request rather than
+  latched, so soft-deleting the last user or booting against an empty database
+  reopens it, silently. Both are fine here: the URLs are internal, and if the
+  window ever does reopen I'll just register again. Not worth a `cmd/createuser`
+  bootstrap command, a latched gate, or a one-time signup token.

@@ -76,6 +76,14 @@ type Service struct {
 	// OpenRegistration allows anyone to register. When false (the default),
 	// registration is first-user-only: it succeeds only while no active user
 	// exists, then closes. This is the safe default for single-user apps.
+	//
+	// Two consequences are known and deliberate: /api/auth/register is open
+	// from the moment the app is reachable until the first account exists, and
+	// because the gate is recomputed per request rather than latched, soft-
+	// deleting the last user or booting against an empty database reopens it.
+	// These apps run on a private network, so the fix for a reopened window is
+	// to register again. Don't add a bootstrap CLI, a latched gate, or a signup
+	// token for it - see "Acknowledged, not fixed" in the README.
 	OpenRegistration bool
 
 	// apiTokensEnabled gates bearer (API token) authentication. It's flipped on
