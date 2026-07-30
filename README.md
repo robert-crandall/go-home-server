@@ -27,6 +27,7 @@ go-home-server/
   files/             # per-user file uploads: bytes on a mounted disk, metadata in Postgres
   notify/            # web push (VAPID) + subscription store
   server/            # chi + huma bootstrap, embedded-SPA serving, graceful shutdown
+  apisec/            # the OpenAPI security requirements to put on an app's own operations
   apiclient/         # tiny bearer-token HTTP client for scripts and MCP tools
   llm/               # OpenAI / Anthropic / xAI completions behind one interface
   mcp/               # dual-mode (CLI + MCP-over-stdio) harness wrapping the Go MCP SDK
@@ -92,6 +93,12 @@ go-home-server/
   Set `server.Options.HealthCheck` (pass `pool.Ping`) to expose a
   `GET /healthz` readiness probe for uptime monitors and container healthchecks;
   it reports 200 when the check passes and 503 when it fails.
+- **API security metadata** - `apisec.Public()`, `apisec.Session(api)`, and
+  `apisec.User(api)` return the `Security:` requirement the foundation puts on
+  its own operations, so an app route guarded by `auth.Middleware` +
+  `auth.RequireUser` documents itself identically. `User` includes bearer only
+  when API tokens are enabled, so the spec never references an undeclared
+  scheme. See [The API-first loop](#the-api-first-loop).
 - **LLM calls** - one small client for OpenAI, Anthropic, and xAI, so an app can
   switch providers with a field on the request instead of three sets of HTTP
   plumbing. `llm.New(llm.ConfigFromEnv())`, then
@@ -161,6 +168,38 @@ The OpenAPI spec is the contract. `server.New` hands you `srv.API`, and
 - so if your frontend generates a typed client from that spec, the client can
 never guess request/response shapes. Regenerating it and committing the result
 is your app repo's job; this module just makes sure it's derived from the code.
+
+### Say what an app route requires
+
+Every foundation operation declares its `Security:`, and an app's operations
+should too - otherwise half the spec is accurate about auth and half isn't, and
+a generated client can't tell which calls need a login. `apisec` returns the same
+requirements the foundation uses:
+
+```go
+func RegisterRoutes(api huma.API, authSvc *auth.Service /* ... */) {
+	authSvc.Register(api)
+	// ... other foundation registrations ...
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-widgets",
+		Method:      http.MethodGet,
+		Path:        "/api/widgets",
+		Errors:      []int{http.StatusUnauthorized},
+		Security:    apisec.User(api),
+	}, listWidgets)
+}
+```
+
+`apisec.User` matches what `auth.Middleware` plus `auth.RequireUser` accept: the
+session cookie, or a bearer token when the app passed `authSvc.TokenHumaConfig`
+to `server.New`. `apisec.Session` is cookie-only (what the token endpoints use),
+and `apisec.Public` clears the requirement for an unauthenticated route.
+
+Writing the requirement out by hand instead - `[]map[string][]string{{"session":
+{}}, {"bearer": {}}}` - happens to work in an app that enabled API tokens, and
+silently produces a spec referencing an undeclared `bearer` scheme in one that
+didn't. Nothing fails; the contract is just wrong.
 
 ### Generate the spec without Postgres
 
