@@ -548,6 +548,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/push/subscribe",
 		Summary:     "Register a browser push subscription",
 		Tags:        []string{"push"},
+		Errors:      []int{http.StatusUnauthorized, http.StatusUnprocessableEntity},
 		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, in *struct{ Body Subscription }) (*struct{}, error) {
 		userID, err := currentUser(ctx)
@@ -574,6 +575,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/push/unsubscribe",
 		Summary:     "Remove a browser push subscription",
 		Tags:        []string{"push"},
+		Errors:      []int{http.StatusUnauthorized},
 		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, in *struct {
 		Body struct {
@@ -596,6 +598,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/push/test",
 		Summary:     "Send a test notification to yourself",
 		Tags:        []string{"push"},
+		Errors:      []int{http.StatusUnauthorized},
 		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
 		userID, err := currentUser(ctx)

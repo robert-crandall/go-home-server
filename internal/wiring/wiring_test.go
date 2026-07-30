@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -36,8 +38,21 @@ type securitySchemeDocument struct {
 }
 
 type operationDocument struct {
-	OperationID string          `json:"operationId"`
-	Security    json.RawMessage `json:"security"`
+	OperationID string                      `json:"operationId"`
+	Security    json.RawMessage             `json:"security"`
+	Responses   map[string]responseDocument `json:"responses"`
+}
+
+type responseDocument struct {
+	Content map[string]mediaTypeDocument `json:"content"`
+}
+
+type mediaTypeDocument struct {
+	Schema schemaDocument `json:"schema"`
+}
+
+type schemaDocument struct {
+	Ref string `json:"$ref"`
 }
 
 type openAPIDocument struct {
@@ -50,6 +65,7 @@ type openAPIDocument struct {
 type operationExpectation struct {
 	route    string
 	security []map[string][]string
+	errors   []string
 }
 
 func readOpenAPI(t *testing.T, api huma.API) openAPIDocument {
@@ -82,10 +98,35 @@ func readOperations(t *testing.T, document openAPIDocument) map[string]operation
 			operations[operation.OperationID] = operationExpectation{
 				route:    strings.ToUpper(method) + " " + path,
 				security: security,
+				errors:   readErrorResponses(t, operation.OperationID, operation.Responses),
 			}
 		}
 	}
 	return operations
+}
+
+func readErrorResponses(t *testing.T, operationID string, responses map[string]responseDocument) []string {
+	t.Helper()
+
+	errors := []string{}
+	for status, response := range responses {
+		if status != "default" {
+			code, err := strconv.Atoi(status)
+			if err != nil || code < 400 {
+				continue
+			}
+		}
+		problem, ok := response.Content["application/problem+json"]
+		if !ok {
+			t.Fatalf("operation %q response %q is not application/problem+json", operationID, status)
+		}
+		if problem.Schema.Ref != "#/components/schemas/ErrorModel" {
+			t.Fatalf("operation %q response %q schema = %q, want ErrorModel", operationID, status, problem.Schema.Ref)
+		}
+		errors = append(errors, status)
+	}
+	sort.Strings(errors)
+	return errors
 }
 
 func TestHumaConfigHook(t *testing.T) {
@@ -193,22 +234,22 @@ func TestFoundationRegistersOnOneAPI(t *testing.T) {
 		{"bearer": []string{}},
 	}
 	want := map[string]operationExpectation{
-		"register":                {route: "POST /api/auth/register", security: public},
-		"login":                   {route: "POST /api/auth/login", security: public},
-		"logout":                  {route: "POST /api/auth/logout", security: public},
-		"current-user":            {route: "GET /api/auth/me", security: sessionOrBearer},
-		"create-api-token":        {route: "POST /api/tokens", security: sessionOnly},
-		"list-api-tokens":         {route: "GET /api/tokens", security: sessionOnly},
-		"delete-api-token":        {route: "DELETE /api/tokens/{id}", security: sessionOnly},
-		"push-subscribe":          {route: "POST /api/push/subscribe", security: sessionOrBearer},
-		"push-unsubscribe":        {route: "POST /api/push/unsubscribe", security: sessionOrBearer},
-		"push-test":               {route: "POST /api/push/test", security: sessionOrBearer},
-		"push-vapid-key":          {route: "GET /api/push/vapid-public-key", security: public},
-		"upload-file":             {route: "POST /api/files", security: sessionOrBearer},
-		"list-files":              {route: "GET /api/files", security: sessionOrBearer},
-		"download-file":           {route: "GET /api/files/{id}", security: sessionOrBearer},
-		"download-file-thumbnail": {route: "GET /api/files/{id}/thumbnail", security: sessionOrBearer},
-		"delete-file":             {route: "DELETE /api/files/{id}", security: sessionOrBearer},
+		"register":                {route: "POST /api/auth/register", security: public, errors: []string{"403", "409", "422", "500"}},
+		"login":                   {route: "POST /api/auth/login", security: public, errors: []string{"401", "422", "500"}},
+		"logout":                  {route: "POST /api/auth/logout", security: public, errors: []string{"422", "500"}},
+		"current-user":            {route: "GET /api/auth/me", security: sessionOrBearer, errors: []string{"401", "500"}},
+		"create-api-token":        {route: "POST /api/tokens", security: sessionOnly, errors: []string{"401", "403", "422", "500"}},
+		"list-api-tokens":         {route: "GET /api/tokens", security: sessionOnly, errors: []string{"401", "403", "500"}},
+		"delete-api-token":        {route: "DELETE /api/tokens/{id}", security: sessionOnly, errors: []string{"401", "403", "404", "422", "500"}},
+		"push-subscribe":          {route: "POST /api/push/subscribe", security: sessionOrBearer, errors: []string{"401", "422", "500"}},
+		"push-unsubscribe":        {route: "POST /api/push/unsubscribe", security: sessionOrBearer, errors: []string{"401", "422", "500"}},
+		"push-test":               {route: "POST /api/push/test", security: sessionOrBearer, errors: []string{"401", "500"}},
+		"push-vapid-key":          {route: "GET /api/push/vapid-public-key", security: public, errors: []string{"default"}},
+		"upload-file":             {route: "POST /api/files", security: sessionOrBearer, errors: []string{"401", "413", "422", "500"}},
+		"list-files":              {route: "GET /api/files", security: sessionOrBearer, errors: []string{"401", "500"}},
+		"download-file":           {route: "GET /api/files/{id}", security: sessionOrBearer, errors: []string{"401", "404", "422", "500"}},
+		"download-file-thumbnail": {route: "GET /api/files/{id}/thumbnail", security: sessionOrBearer, errors: []string{"401", "404", "422", "500"}},
+		"delete-file":             {route: "DELETE /api/files/{id}", security: sessionOrBearer, errors: []string{"401", "404", "422", "500"}},
 	}
 
 	got := readOperations(t, document)
@@ -220,6 +261,8 @@ func TestFoundationRegistersOnOneAPI(t *testing.T) {
 			t.Errorf("operation %q is %s, want %s", id, actual.route, expected.route)
 		case !reflect.DeepEqual(actual.security, expected.security):
 			t.Errorf("operation %q security = %#v, want %#v", id, actual.security, expected.security)
+		case !reflect.DeepEqual(actual.errors, expected.errors):
+			t.Errorf("operation %q errors = %#v, want %#v", id, actual.errors, expected.errors)
 		}
 	}
 	for id, operation := range got {
