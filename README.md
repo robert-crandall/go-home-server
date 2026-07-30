@@ -9,15 +9,10 @@ an imported dependency. Apps `go get` it and pick up fixes with `go get -u`.
 
 The layer you can't import - the Svelte SPA, the service worker, the PWA manifest
 and iOS icons, the Vite/Tailwind config, the Dockerfile, the compose file, the
-CI/CD workflows - used to live here under `template/`. It has been extracted so
-this repo stays a clean vendorable dependency; it will get its own repo. The last
-commit that contained it is `6a88e3f`, so until then:
+CI/CD workflows - belongs to each app, not here. Keeping it out is what makes
+this repo a clean vendorable dependency.
 
-```bash
-git checkout 6a88e3f -- template scripts/new-app.sh
-```
-
-What's left here still can't silently rot: `examples/minimal` is a complete app
+What's here still can't silently rot: `examples/minimal` is a complete app
 that CI compiles, and `internal/wiring` mounts every endpoint this module offers
 onto one huma API so a cross-package break fails the build.
 
@@ -459,9 +454,8 @@ uploads at all, drop the `files` service and its `Register` call instead of
 setting `UPLOAD_DIR`.
 
 The app-side layer - Svelte SPA, service worker, PWA icons, Dockerfile, compose,
-CI/CD - will live in a separate repo. That repo doesn't exist yet; for now,
-recover the old in-repo template from git history using the command at the top
-of this file.
+CI/CD - is yours to write. This module serves whatever `fs.FS` you hand
+`server.Options.SPA` and has no opinion about how you build it.
 
 ## Validation
 
@@ -472,35 +466,17 @@ make foundation-check   # go build/vet/test on the module
 Integration tests are gated on `TEST_DATABASE_URL`; `make dev-db` starts a
 Postgres and prints the export line.
 
-## Status / honesty
+## Acknowledged, not fixed
 
-Verified locally against a real Postgres: migrations (including that two
-migration sources with colliding version numbers stay isolated by version
-table), register -> me -> logout, the push endpoints, the first-user-only
-registration gate (including a concurrent-registration test), the file
-upload/download/thumbnail endpoints, unknown `/api` paths returning JSON 404,
-and the embedded SPA (real build served, deep links fall back to index.html,
-manifest / service worker / icons all served with correct content types).
+The bar for this repo is single-user homelab software on a private network. A
+failure mode that needs a hostile party already inside the LAN, or that I can
+undo by re-registering, gets a line here instead of code. Please don't "fix"
+these - if you think one has actually become a problem, say so and make the case.
 
-`internal/wiring` mounts auth, API tokens, notifications, and files on one huma
-API and marshals the resulting OpenAPI spec. That's the check that catches a
-cross-package break - an operation-ID collision, say - which no single-package
-test can see, and it needs no database. Fail-first verified: renaming one
-operation to collide with another does fail it.
-
-The MCP install path was verified when the app template lived here: scaffold an
-app, install the binary, then drive it against the running app with nothing but
-`~/.config/<app>.json` - `create_note` then `list_notes` round-tripped through
-the real API. Precedence was checked live too: an `MCP_APP_URL` env var beats
-the config file, a stale `.env` in the app checkout does not, and with no config
-file that `.env` is still honored. Those runs predate the split; the `mcp` and
-`apiclient` packages themselves are unchanged and still covered by their own
-tests.
-
-**Not** verified here: the `llm` package against live APIs. Its wire formats
-(endpoints, auth headers, `max_completion_tokens` vs `max_tokens`, Anthropic's
-top-level `system` field and typed content blocks, and both SSE streaming
-formats) were checked against each vendor's current documentation, and the
-request/response handling is covered by `httptest` servers - but no real call to
-OpenAI, Anthropic, or xAI was made, because this environment has no API keys.
-Make one real call per provider, blocking and streaming, before depending on it.
+- **The first-user registration window.** With `ALLOW_OPEN_REGISTRATION` unset,
+  `POST /api/auth/register` is open from the moment the app is reachable until
+  the first account exists. The gate is also recomputed per request rather than
+  latched, so soft-deleting the last user or booting against an empty database
+  reopens it, silently. Both are fine here: the URLs are internal, and if the
+  window ever does reopen I'll just register again. Not worth a `cmd/createuser`
+  bootstrap command, a latched gate, or a one-time signup token.
