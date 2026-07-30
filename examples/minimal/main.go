@@ -78,6 +78,7 @@ func main() {
 		// passes its embedded dist directory instead: SPA: web.Dist.
 		Middlewares: []func(http.Handler) http.Handler{authSvc.Middleware},
 		HealthCheck: pool.Ping,
+		HumaConfig:  authSvc.TokenHumaConfig,
 	})
 
 	// Register the foundation's operations on the shared huma API.

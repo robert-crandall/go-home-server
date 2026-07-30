@@ -15,7 +15,7 @@ func tokenTestUser(t *testing.T) (*Service, User) {
 	t.Helper()
 	pool := testPool(t)
 	svc := NewService(pool, false)
-	svc.apiTokensEnabled = true // RegisterTokens would do this in a real app
+	svc.apiTokensEnabled = true // TokenHumaConfig does this in a real app
 	u, err := svc.CreateUser(context.Background(), "token-user@example.com", "supersecret")
 	if err != nil {
 		t.Fatalf("create user: %v", err)

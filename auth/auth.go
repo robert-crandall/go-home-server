@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/robert-crandall/go-home-server/internal/apisecurity"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -90,12 +91,11 @@ type Service struct {
 	// token for it - see "Acknowledged, not fixed" in the README.
 	OpenRegistration bool
 
-	// apiTokensEnabled gates bearer (API token) authentication. It's flipped on
-	// by RegisterTokens, so an app that never opts into API tokens neither
-	// exposes the token-management endpoints nor honors bearer credentials -
-	// even against a shared database that happens to contain token rows. When
-	// false, an Authorization: Bearer header is ignored and the request falls
-	// back to cookie auth.
+	// apiTokensEnabled gates bearer (API token) authentication. TokenHumaConfig
+	// flips it on; RegisterTokens separately mounts the management endpoints and
+	// requires that same config. An app that omits the token config ignores
+	// bearer credentials even against a shared database with token rows. When
+	// false, an Authorization: Bearer header falls back to cookie auth.
 	apiTokensEnabled bool
 }
 
@@ -434,6 +434,7 @@ func (s *Service) Register(api huma.API) {
 		Summary:     "Register a new user",
 		Tags:        []string{"auth"},
 		Errors:      []int{http.StatusForbidden, http.StatusConflict, http.StatusUnprocessableEntity},
+		Security:    apisecurity.Public(),
 	}, func(ctx context.Context, in *credentialsInput) (*sessionOutput, error) {
 		u, token, exp, err := s.registerUser(ctx, in.Body.Email, in.Body.Password)
 		if err != nil {
@@ -457,6 +458,7 @@ func (s *Service) Register(api huma.API) {
 		Path:        "/api/auth/login",
 		Summary:     "Log in",
 		Tags:        []string{"auth"},
+		Security:    apisecurity.Public(),
 	}, func(ctx context.Context, in *credentialsInput) (*sessionOutput, error) {
 		u, err := s.authenticate(ctx, in.Body.Email, in.Body.Password)
 		if err != nil {
@@ -478,6 +480,7 @@ func (s *Service) Register(api huma.API) {
 		Path:        "/api/auth/logout",
 		Summary:     "Log out",
 		Tags:        []string{"auth"},
+		Security:    apisecurity.Public(),
 	}, func(ctx context.Context, in *struct {
 		Session string `cookie:"session"`
 	}) (*struct {
@@ -501,6 +504,7 @@ func (s *Service) Register(api huma.API) {
 		Path:        "/api/auth/me",
 		Summary:     "Get the current user",
 		Tags:        []string{"auth"},
+		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, _ *struct{}) (*struct{ Body User }, error) {
 		u, err := RequireUser(ctx)
 		if err != nil {
