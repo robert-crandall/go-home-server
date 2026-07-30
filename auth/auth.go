@@ -458,6 +458,7 @@ func (s *Service) Register(api huma.API) {
 		Path:        "/api/auth/login",
 		Summary:     "Log in",
 		Tags:        []string{"auth"},
+		Errors:      []int{http.StatusUnauthorized},
 		Security:    apisecurity.Public(),
 	}, func(ctx context.Context, in *credentialsInput) (*sessionOutput, error) {
 		u, err := s.authenticate(ctx, in.Body.Email, in.Body.Password)
@@ -480,6 +481,7 @@ func (s *Service) Register(api huma.API) {
 		Path:        "/api/auth/logout",
 		Summary:     "Log out",
 		Tags:        []string{"auth"},
+		Errors:      []int{http.StatusInternalServerError},
 		Security:    apisecurity.Public(),
 	}, func(ctx context.Context, in *struct {
 		Session string `cookie:"session"`
@@ -504,6 +506,7 @@ func (s *Service) Register(api huma.API) {
 		Path:        "/api/auth/me",
 		Summary:     "Get the current user",
 		Tags:        []string{"auth"},
+		Errors:      []int{http.StatusUnauthorized},
 		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, _ *struct{}) (*struct{ Body User }, error) {
 		u, err := RequireUser(ctx)

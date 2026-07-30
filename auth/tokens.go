@@ -375,7 +375,7 @@ func (s *Service) RegisterTokens(api huma.API) {
 		Summary:       "Create an API token",
 		Tags:          []string{"tokens"},
 		DefaultStatus: http.StatusCreated,
-		Errors:        []int{http.StatusForbidden, http.StatusUnprocessableEntity},
+		Errors:        []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
 		Security:      apisecurity.Session(api),
 	}, func(ctx context.Context, in *createTokenInput) (*createTokenOutput, error) {
 		u, err := RequireSessionUser(ctx)
@@ -414,7 +414,7 @@ func (s *Service) RegisterTokens(api huma.API) {
 		Path:        "/api/tokens",
 		Summary:     "List your API tokens",
 		Tags:        []string{"tokens"},
-		Errors:      []int{http.StatusForbidden},
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden},
 		Security:    apisecurity.Session(api),
 	}, func(ctx context.Context, _ *struct{}) (*listTokensOutput, error) {
 		u, err := RequireSessionUser(ctx)
@@ -435,7 +435,7 @@ func (s *Service) RegisterTokens(api huma.API) {
 		Summary:       "Revoke an API token",
 		Tags:          []string{"tokens"},
 		DefaultStatus: http.StatusNoContent,
-		Errors:        []int{http.StatusForbidden, http.StatusNotFound},
+		Errors:        []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 		Security:      apisecurity.Session(api),
 	}, func(ctx context.Context, in *struct {
 		ID int64 `path:"id" doc:"Token id to revoke"`
