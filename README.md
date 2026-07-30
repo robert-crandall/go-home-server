@@ -455,7 +455,8 @@ ENV
 Then add your own migration `fs.FS` as a second `db.MigrationSource` (the
 example shows where), register your own huma routes next to the foundation's,
 and embed your own built SPA into `server.Options.SPA`. Embed a `build`
-directory with `//go:embed all:build`, then pass `fs.Sub(embedded, "build")` as
+directory with `//go:embed all:build`, then handle the error from
+`fs.Sub(embedded, "build")` and use the returned `fs.FS` for
 `server.Options.SPA`. Without `all:`, Go still embeds `index.html` but silently
 skips underscore-prefixed output such as SvelteKit's `_app/`; forgetting
 `fs.Sub` is louder because `server.New` panics when `index.html` is not at the
