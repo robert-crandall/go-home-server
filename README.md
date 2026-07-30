@@ -48,12 +48,13 @@ go-home-server/
   a session alive.
 - **API tokens** (opt-in) - personal access tokens so scripts, cron jobs, or an
   MCP server can call the API with `Authorization: Bearer <token>` instead of a
-  browser cookie. Call `authSvc.RegisterTokens(api)` to mount `/api/tokens`
-  (create / list / revoke) and enable bearer auth. Only sha256(secret) is stored;
+  browser cookie. Pass `HumaConfig: authSvc.TokenHumaConfig` to `server.New`,
+  then call `authSvc.RegisterTokens(api)` to mount `/api/tokens` (create / list /
+  revoke). Only sha256(secret) is stored;
   the plaintext is shown once. A bearer request never falls back to the cookie,
   and token management itself is session-only, so a leaked token can't mint,
-  list, or revoke tokens. Apps that don't call `RegisterTokens` expose no token
-  endpoints and ignore bearer credentials entirely.
+  list, or revoke tokens. Apps that omit this pair expose no token endpoints and
+  ignore bearer credentials entirely.
 - **File uploads** - `POST/GET/DELETE /api/files` for per-user files, with the
   bytes on a directory you bind-mount into the container and the metadata in
   Postgres. Photos are the motivating case: the download endpoint streams

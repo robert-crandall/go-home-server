@@ -162,7 +162,7 @@ func TestSoftDeletedUserSessionIsNotSlid(t *testing.T) {
 func TestBearerRequestDoesNotSlideCookieSession(t *testing.T) {
 	original := time.Now().Add(10 * 24 * time.Hour)
 	svc, u, token := slideFixture(t, original)
-	svc.apiTokensEnabled = true // RegisterTokens would do this in a real app
+	svc.apiTokensEnabled = true // TokenHumaConfig does this in a real app
 	_, plaintext, err := svc.CreateAPIToken(context.Background(), u.ID, "script", nil)
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)

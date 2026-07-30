@@ -16,6 +16,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/robert-crandall/go-home-server/internal/apisecurity"
 )
 
 // APITokenPrefix marks a personal access token. The full plaintext is
@@ -346,16 +347,26 @@ type listTokensOutput struct {
 	Body []APIToken
 }
 
-// RegisterTokens mounts the token-management endpoints under /api/tokens and,
-// as a side effect, enables bearer (API token) authentication in Middleware.
-// Call it only from apps that want programmatic API access; apps that don't
-// call it expose no token endpoints and ignore bearer credentials entirely.
+// TokenHumaConfig enables bearer authentication in Middleware and adds its
+// session and bearer schemes to the OpenAPI config. Pass it as
+// server.Options.HumaConfig when RegisterTokens will be called.
+func (s *Service) TokenHumaConfig(cfg huma.Config) huma.Config {
+	s.apiTokensEnabled = true
+	return apisecurity.ConfigureTokenAuth(cfg)
+}
+
+// RegisterTokens mounts the token-management endpoints under /api/tokens.
+// Call it only from apps that want programmatic API access, and pair it with
+// TokenHumaConfig when constructing the server. Apps that don't call it expose
+// no token endpoints.
 //
 // Every endpoint here requires session (cookie) auth via RequireSessionUser, so
 // a leaked API token can't mint, list, or revoke tokens - only a browser session
 // can.
 func (s *Service) RegisterTokens(api huma.API) {
-	s.apiTokensEnabled = true
+	if !s.apiTokensEnabled || !apisecurity.BearerConfigured(api) {
+		panic("auth: RegisterTokens requires HumaConfig: authSvc.TokenHumaConfig")
+	}
 
 	huma.Register(api, huma.Operation{
 		OperationID:   "create-api-token",
@@ -365,6 +376,7 @@ func (s *Service) RegisterTokens(api huma.API) {
 		Tags:          []string{"tokens"},
 		DefaultStatus: http.StatusCreated,
 		Errors:        []int{http.StatusForbidden, http.StatusUnprocessableEntity},
+		Security:      apisecurity.Session(api),
 	}, func(ctx context.Context, in *createTokenInput) (*createTokenOutput, error) {
 		u, err := RequireSessionUser(ctx)
 		if err != nil {
@@ -403,6 +415,7 @@ func (s *Service) RegisterTokens(api huma.API) {
 		Summary:     "List your API tokens",
 		Tags:        []string{"tokens"},
 		Errors:      []int{http.StatusForbidden},
+		Security:    apisecurity.Session(api),
 	}, func(ctx context.Context, _ *struct{}) (*listTokensOutput, error) {
 		u, err := RequireSessionUser(ctx)
 		if err != nil {
@@ -423,6 +436,7 @@ func (s *Service) RegisterTokens(api huma.API) {
 		Tags:          []string{"tokens"},
 		DefaultStatus: http.StatusNoContent,
 		Errors:        []int{http.StatusForbidden, http.StatusNotFound},
+		Security:      apisecurity.Session(api),
 	}, func(ctx context.Context, in *struct {
 		ID int64 `path:"id" doc:"Token id to revoke"`
 	}) (*struct{}, error) {

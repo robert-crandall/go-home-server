@@ -36,6 +36,7 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/robert-crandall/go-home-server/internal/apisecurity"
 )
 
 // VAPID P-256 key sizes (raw bytes, before base64url): the public key is an
@@ -523,6 +524,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/push/vapid-public-key",
 		Summary:     "Get the VAPID public key for push subscription",
 		Tags:        []string{"push"},
+		Security:    apisecurity.Public(),
 	}, func(ctx context.Context, _ *struct{}) (*struct {
 		Body struct {
 			PublicKey string `json:"publicKey"`
@@ -546,6 +548,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/push/subscribe",
 		Summary:     "Register a browser push subscription",
 		Tags:        []string{"push"},
+		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, in *struct{ Body Subscription }) (*struct{}, error) {
 		userID, err := currentUser(ctx)
 		if err != nil {
@@ -571,6 +574,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/push/unsubscribe",
 		Summary:     "Remove a browser push subscription",
 		Tags:        []string{"push"},
+		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, in *struct {
 		Body struct {
 			Endpoint string `json:"endpoint"`
@@ -592,6 +596,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/push/test",
 		Summary:     "Send a test notification to yourself",
 		Tags:        []string{"push"},
+		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
 		userID, err := currentUser(ctx)
 		if err != nil {

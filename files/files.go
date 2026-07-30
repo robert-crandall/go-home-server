@@ -53,6 +53,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/robert-crandall/go-home-server/internal/apisecurity"
 )
 
 // DefaultMaxBytes is the per-upload size cap when Options.MaxBytes is unset.
@@ -530,6 +531,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		RequestBody:     uploadRequestBody(),
 		BodyReadTimeout: uploadReadTimeout,
 		Middlewares:     huma.Middlewares{svc.guardUpload(api, currentUser)},
+		Security:        apisecurity.User(api),
 	}, func(ctx context.Context, in *uploadInput) (*struct{ Body File }, error) {
 		userID, err := currentUser(ctx)
 		if err != nil {
@@ -561,6 +563,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/files",
 		Summary:     "List your files",
 		Tags:        []string{"files"},
+		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, _ *struct{}) (*struct{ Body []File }, error) {
 		userID, err := currentUser(ctx)
 		if err != nil {
@@ -579,6 +582,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/files/{id}",
 		Summary:     "Download a file's contents",
 		Tags:        []string{"files"},
+		Security:    apisecurity.User(api),
 		// huma can't infer a body schema from StreamResponse, so without this
 		// the spec claims the endpoint returns nothing. The runtime
 		// Content-Type is whatever was sniffed at upload; octet-stream is the
@@ -618,6 +622,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Summary:     "Download a file's thumbnail",
 		Description: "Serves a small JPEG preview. 404 when the file has no thumbnail - check hasThumbnail and fall back to the full file.",
 		Tags:        []string{"files"},
+		Security:    apisecurity.User(api),
 		// Same reason as download-file: StreamResponse carries no inferable
 		// schema. This one is always a JPEG.
 		Responses: map[string]*huma.Response{
@@ -655,6 +660,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		Path:        "/api/files/{id}",
 		Summary:     "Delete a file",
 		Tags:        []string{"files"},
+		Security:    apisecurity.User(api),
 	}, func(ctx context.Context, in *struct {
 		ID int64 `path:"id"`
 	}) (*struct{}, error) {
