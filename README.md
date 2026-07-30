@@ -81,7 +81,8 @@ go-home-server/
   dedup or quota - the volume's size is the quota.
 - **Notifications** - store browser push subscriptions and send Web Push with
   VAPID. `notify.Send(ctx, userID, payload)` from anywhere. The frontend half
-  (service worker + subscribe flow) is the app's to write.
+  (service worker + subscribe flow) is the app's to write; see
+  [Browser web push](docs/web-push.md) for the minimal wiring.
 - **Database** - a pgx pool and a goose migration runner. Shared migrations and
   app migrations track separate goose version tables, so both can number from
   00001 without colliding.
