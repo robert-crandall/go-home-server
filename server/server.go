@@ -72,8 +72,16 @@ type Server struct {
 }
 
 // New builds the router and huma API. Register operations on Server.API before
-// calling Run.
+// calling Run. New panics if a configured SPA has no index.html at its root.
 func New(opts Options) *Server {
+	if opts.SPA != nil {
+		index, err := opts.SPA.Open("index.html")
+		if err != nil {
+			panic(`server: SPA has no index.html at its root - did you forget fs.Sub(embedded, "build")?`)
+		}
+		_ = index.Close()
+	}
+
 	r := chi.NewMux()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)

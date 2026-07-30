@@ -7,6 +7,27 @@ import (
 	"testing/fstest"
 )
 
+func TestNewValidatesSPARoot(t *testing.T) {
+	t.Run("index at root", func(t *testing.T) {
+		New(Options{SPA: fstest.MapFS{
+			"index.html": {Data: []byte("<!doctype html>")},
+		}})
+	})
+
+	t.Run("index below root", func(t *testing.T) {
+		defer func() {
+			const want = `server: SPA has no index.html at its root - did you forget fs.Sub(embedded, "build")?`
+			if got := recover(); got != want {
+				t.Fatalf("panic = %q, want %q", got, want)
+			}
+		}()
+
+		New(Options{SPA: fstest.MapFS{
+			"build/index.html": {Data: []byte("<!doctype html>")},
+		}})
+	})
+}
+
 // TestSPACacheHeaders locks in the caching contract that makes PWA auto-update
 // work through a CDN: hashed bundles are immutable, and every stable-named file
 // (the HTML shell, service worker, manifest, icons) is always revalidated.
