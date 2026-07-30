@@ -161,6 +161,75 @@ The OpenAPI spec is the contract. `server.New` hands you `srv.API`, and
 never guess request/response shapes. Regenerating it and committing the result
 is your app repo's job; this module just makes sure it's derived from the code.
 
+### Generate the spec without Postgres
+
+Put every registration call, including your app's operations, in one importable
+function outside `cmd`. Call it from both `cmd/server` and `cmd/openapi`;
+otherwise the generator can quietly produce only half the contract.
+
+A `cmd/openapi/main.go` can build the API with nil database pools:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"os"
+
+	"example.com/my-app/internal/app"
+	"github.com/robert-crandall/go-home-server/auth"
+	"github.com/robert-crandall/go-home-server/files"
+	"github.com/robert-crandall/go-home-server/notify"
+	"github.com/robert-crandall/go-home-server/server"
+)
+
+func main() {
+	dir, err := os.MkdirTemp("", "my-app-openapi-*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	authSvc := auth.NewService(nil, true)
+	notifySvc, err := notify.NewService(nil, notify.VAPID{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	filesSvc, err := files.NewService(nil, files.Options{Dir: dir})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	srv := server.New(server.Options{
+		Title:      "My App",
+		Version:    "1.0.0",
+		HumaConfig: authSvc.TokenHumaConfig,
+	})
+	app.RegisterRoutes(srv.API, authSvc, notifySvc, filesSvc)
+
+	if err := json.NewEncoder(os.Stdout).Encode(srv.API.OpenAPI()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Use the same title and version as `cmd/server`, then commit the result your
+frontend consumes:
+
+```bash
+go run ./cmd/openapi > openapi.json
+```
+
+`RegisterRoutes` must mount the foundation and app routes. `files.NewService`
+stats and write-probes `Dir`, so it still needs a real writable directory.
+`TokenHumaConfig` mutates the auth service and `RegisterTokens` dereferences it,
+so construct the service even though its pool is nil.
+
+The load-bearing rule is that registration may *capture* a dependency but must
+never *call* one. A database query during registration breaks offline spec
+generation.
+
 ## MCP servers
 
 Every app can expose its data to Claude (or any MCP client) through a small MCP
