@@ -454,9 +454,14 @@ ENV
 
 Then add your own migration `fs.FS` as a second `db.MigrationSource` (the
 example shows where), register your own huma routes next to the foundation's,
-and embed your own built SPA into `server.Options.SPA`. If you don't want file
-uploads at all, drop the `files` service and its `Register` call instead of
-setting `UPLOAD_DIR`.
+and embed your own built SPA into `server.Options.SPA`. Embed a `build`
+directory with `//go:embed all:build`, then handle the error from
+`fs.Sub(embedded, "build")` and use the returned `fs.FS` for
+`server.Options.SPA`. Without `all:`, Go still embeds `index.html` but silently
+skips underscore-prefixed output such as SvelteKit's `_app/`; forgetting
+`fs.Sub` is louder because `server.New` panics when `index.html` is not at the
+FS root. If you don't want file uploads at all, drop the `files` service and
+its `Register` call instead of setting `UPLOAD_DIR`.
 
 The app-side layer - Svelte SPA, service worker, PWA icons, Dockerfile, compose,
 CI/CD - is yours to write. This module serves whatever `fs.FS` you hand
