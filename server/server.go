@@ -223,15 +223,17 @@ func spaHandler(dist fs.FS) http.HandlerFunc {
 // including through a CDN like Cloudflare that otherwise edge-caches .js/.css by
 // file extension. p is the request path with its leading slash trimmed.
 //
-// It assumes a Vite-style build layout: content-hashed, immutable output lives
-// under assets/ (a new build gives it a new filename), while everything else -
-// index.html, the service worker, the web manifest, icons - keeps a stable name
-// and so must always be revalidated. no-cache means "store but revalidate before
-// use"; Cloudflare's Origin Cache Control (on by default) honors it and
+// It recognizes the output layouts used by Vite and SvelteKit's default appDir:
+// content-hashed, immutable output lives under assets/ or _app/immutable/ (a
+// new build gives it a new filename), while everything else - index.html, the
+// service worker, the web manifest, icons, and SvelteKit's _app/version.json -
+// keeps a stable name and so must always be revalidated. Apps must reserve those
+// prefixes for content-hashed output. no-cache means "store but revalidate
+// before use"; Cloudflare's Origin Cache Control (on by default) honors it and
 // revalidates at the edge, so installed PWAs pick up the new UI without a force
 // refresh.
 func setSPACacheControl(w http.ResponseWriter, p string) {
-	if strings.HasPrefix(p, "assets/") {
+	if strings.HasPrefix(p, "assets/") || strings.HasPrefix(p, "_app/immutable/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		return
 	}
