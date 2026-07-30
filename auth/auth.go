@@ -6,6 +6,10 @@
 // stored in Postgres. Sessions are therefore revocable (delete the row) and the
 // raw token never lives at rest. Passwords are hashed with bcrypt.
 //
+// Sessions slide: an /api request that authenticates by cookie pushes the
+// expiry a full sessionTTL out, so a user who keeps using the app is never
+// logged out.
+//
 // Wiring in an app is three lines:
 //
 //	svc := auth.NewService(pool, cfg.IsProduction())
@@ -219,19 +223,39 @@ func (s *Service) createSession(ctx context.Context, userID int64) (token string
 	return token, expires, err
 }
 
-func (s *Service) userFromToken(ctx context.Context, token string) (User, error) {
+// userFromToken resolves a session cookie to its user and slides the session's
+// expiry a full sessionTTL into the future, so a user who keeps browsing is
+// never logged out. The slide happens in the lookup itself rather than in a second,
+// throttled statement: the predicates are exactly the ones the plain SELECT
+// used, so an expired session or a soft-deleted user still matches nothing and
+// is neither authenticated nor resurrected.
+//
+// It returns the new expiry so the caller can put the same instant on the
+// cookie, keeping the browser's view and the row in step.
+//
+// This means one small write per cookie-authenticated API request. That's fine
+// here: the row is found by primary key, expires_at is deliberately unindexed
+// (migration 00007) so the update can usually be HOT, and these are single-user
+// apps on a LAN, so the write volume is a person clicking around.
+func (s *Service) userFromToken(ctx context.Context, token string) (User, time.Time, error) {
 	var u User
+	expires := time.Now().Add(sessionTTL)
 	err := s.db.QueryRow(ctx,
-		`SELECT u.id, u.email, u.created_at
-		   FROM sessions s
-		   JOIN users u ON u.id = s.user_id
-		  WHERE s.token_hash = $1 AND s.expires_at > now() AND u.deleted_at IS NULL`,
-		hashToken(token),
+		`UPDATE sessions s
+		    SET expires_at = $2
+		   FROM users u
+		  WHERE s.token_hash = $1 AND u.id = s.user_id
+		    AND s.expires_at > now() AND u.deleted_at IS NULL
+		 RETURNING u.id, u.email, u.created_at`,
+		hashToken(token), expires,
 	).Scan(&u.ID, &u.Email, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, ErrNotFound
+		return User{}, time.Time{}, ErrNotFound
 	}
-	return u, err
+	if err != nil {
+		return User{}, time.Time{}, err
+	}
+	return u, expires, nil
 }
 
 func (s *Service) deleteSession(ctx context.Context, token string) error {
@@ -308,6 +332,12 @@ func withUser(ctx context.Context, u User, src AuthSource) context.Context {
 // expired, or wrong-secret bearer resolves no user even if a valid session
 // cookie is also present. Without a Bearer header (or when tokens are disabled)
 // the session cookie is used as before.
+//
+// A request that authenticates by cookie also slides that session's expiry a
+// full sessionTTL out and re-sends the cookie, so someone who keeps using the
+// app never has to log in again. Sessions therefore expire after 30 days of
+// inactivity rather than 30 days after login. Only /api requests slide a
+// session, since only they resolve a credential at all.
 func (s *Service) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAPIPath(r.URL.Path) {
@@ -318,7 +348,13 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 					}
 				}
 			} else if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
-				if u, err := s.userFromToken(r.Context(), c.Value); err == nil {
+				if u, expires, err := s.userFromToken(r.Context(), c.Value); err == nil {
+					// The lookup just slid the row's expiry; re-send the same
+					// token so the browser's copy expires with it. Written
+					// before the handler runs, so a handler that emits its own
+					// session cookie - only logout does - replaces this one.
+					refreshed := s.cookie(c.Value, expires)
+					http.SetCookie(w, &refreshed)
 					r = r.WithContext(withUser(r.Context(), u, AuthSession))
 				}
 			}
