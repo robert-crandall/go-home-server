@@ -560,3 +560,15 @@ these - if you think one has actually become a problem, say so and make the case
   reopens it, silently. Both are fine here: the URLs are internal, and if the
   window ever does reopen I'll just register again. Not worth a `cmd/createuser`
   bootstrap command, a latched gate, or a one-time signup token.
+
+- **CSRF protection is `SameSite=Lax`.** The foundation adds no CSRF token or
+  origin check. Explicit `SameSite=Lax` withholds the session cookie on
+  cross-site unsafe-method requests, including form POSTs, which is enough for
+  these same-origin SPAs on a private network. I accept two edges: a cross-site
+  top-level navigation to a cookie-authenticated foundation `/api` GET sends
+  the cookie and slides the session expiry, but the attacker cannot read the
+  response and the session slide is the foundation's only state change on
+  those GETs; and a same-scheme sibling origin under the same registrable
+  domain is same-site, so it can send authenticated requests to this app
+  origin. Please don't add a CSRF token library or origin check; if you need
+  sibling apps under one apex domain isolated, say so and make the case.
