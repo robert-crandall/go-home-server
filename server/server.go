@@ -44,6 +44,10 @@ type Options struct {
 	Version string
 	Addr    string
 
+	// HumaConfig, when set, customizes huma's default config before the API is
+	// created. Initialize optional nested maps before adding entries to them.
+	HumaConfig func(huma.Config) huma.Config
+
 	// SPA is the built frontend (the dist directory) to serve. When nil, no
 	// static serving is wired up (useful for API-only services or tests).
 	SPA fs.FS
@@ -88,7 +92,11 @@ func New(opts Options) *Server {
 		version = "0.0.0"
 	}
 
-	api := humachi.New(r, huma.DefaultConfig(title, version))
+	cfg := huma.DefaultConfig(title, version)
+	if opts.HumaConfig != nil {
+		cfg = opts.HumaConfig(cfg)
+	}
+	api := humachi.New(r, cfg)
 
 	// A liveness/readiness probe for load balancers, uptime monitors, and
 	// container healthchecks. Always mounted (never left to the SPA fallback,

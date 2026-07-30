@@ -26,6 +26,27 @@ import (
 	"github.com/robert-crandall/go-home-server/server"
 )
 
+func TestHumaConfigHook(t *testing.T) {
+	const schemeName = "test-bearer"
+
+	srv := server.New(server.Options{
+		HumaConfig: func(cfg huma.Config) huma.Config {
+			cfg.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
+				schemeName: {Type: "http", Scheme: "bearer"},
+			}
+			return cfg
+		},
+	})
+
+	scheme := srv.API.OpenAPI().Components.SecuritySchemes[schemeName]
+	if scheme == nil {
+		t.Fatalf("security scheme %q was not registered", schemeName)
+	}
+	if scheme.Type != "http" || scheme.Scheme != "bearer" {
+		t.Errorf("security scheme = %#v, want HTTP bearer", scheme)
+	}
+}
+
 // TestFoundationRegistersOnOneAPI mounts every endpoint the foundation offers
 // onto a single huma API and serializes the resulting spec.
 //
