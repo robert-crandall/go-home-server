@@ -206,6 +206,13 @@ func TestFoundationRegistersOnOneAPI(t *testing.T) {
 	// A duplicate operation ID or a colliding schema name panics in here.
 	authSvc.Register(srv.API)
 	authSvc.RegisterTokens(srv.API)
+	if err := authSvc.RegisterGoogle(srv.API, auth.GoogleConfig{
+		ClientID:     "wiring-client-id",
+		ClientSecret: "wiring-client-secret",
+		RedirectURL:  "https://example.test/api/auth/google/callback",
+	}); err != nil {
+		t.Fatalf("RegisterGoogle: %v", err)
+	}
 	notify.Register(srv.API, notifySvc, currentUser)
 	files.Register(srv.API, filesSvc, currentUser)
 
@@ -238,6 +245,8 @@ func TestFoundationRegistersOnOneAPI(t *testing.T) {
 		"login":                   {route: "POST /api/auth/login", security: public, errors: []string{"401", "422", "500"}},
 		"logout":                  {route: "POST /api/auth/logout", security: public, errors: []string{"422", "500"}},
 		"current-user":            {route: "GET /api/auth/me", security: sessionOrBearer, errors: []string{"401", "500"}},
+		"google-login-start":      {route: "GET /api/auth/google/start", security: public, errors: []string{"default"}},
+		"google-login-callback":   {route: "GET /api/auth/google/callback", security: public, errors: []string{"422", "500"}},
 		"create-api-token":        {route: "POST /api/tokens", security: sessionOnly, errors: []string{"401", "403", "422", "500"}},
 		"list-api-tokens":         {route: "GET /api/tokens", security: sessionOnly, errors: []string{"401", "403", "500"}},
 		"delete-api-token":        {route: "DELETE /api/tokens/{id}", security: sessionOnly, errors: []string{"401", "403", "404", "422", "500"}},

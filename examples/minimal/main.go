@@ -84,6 +84,20 @@ func main() {
 	// Register the foundation's operations on the shared huma API.
 	authSvc.Register(srv.API)
 	authSvc.RegisterTokens(srv.API) // /api/tokens + bearer auth for scripts/MCP
+
+	// Optional: "Sign in with Google" alongside the password login. Skipped
+	// entirely when no client is configured, so a password-only app needs no
+	// Google setup at all.
+	if cfg.GoogleClientID != "" {
+		if err := authSvc.RegisterGoogle(srv.API, auth.GoogleConfig{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+		}); err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	currentUser := func(ctx context.Context) (int64, error) {
 		u, err := auth.RequireUser(ctx)
 		return u.ID, err

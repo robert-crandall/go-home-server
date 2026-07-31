@@ -49,6 +49,12 @@ go-home-server/
   cookie pushes the expiry 30 days out again, so a session dies after 30 days of
   *inactivity*, not 30 days after login. Only `/api` requests slide one, so an
   app whose pages never call the API won't keep a session alive.
+- **Sign in with Google** (opt-in) - `authSvc.RegisterGoogle(api, cfg)` mounts a
+  server-side OAuth 2.0 authorization code flow at `/api/auth/google/{start,callback}`
+  that ends by setting the same session cookie the password login sets. One
+  account, two doors: a Google sign-in is matched to an existing user by verified
+  email, so whoever registered with a password can also click the button. See
+  [Sign in with Google](#sign-in-with-google).
 - **API tokens** (opt-in) - personal access tokens so scripts, cron jobs, or an
   MCP server can call the API with `Authorization: Bearer <token>` instead of a
   browser cookie. Pass `HumaConfig: authSvc.TokenHumaConfig` to `server.New`,
@@ -152,6 +158,9 @@ MCP settings (see [MCP servers](#mcp-servers)).
 | `APP_ENV` | `development` | `production` turns on secure cookies (`cfg.IsProduction()`). |
 | `SESSION_SECRET` | *(empty)* | Read and exposed on `Config`, but **no foundation package uses it**. It's there for an app that wants signing/derivation material. Safe to leave unset. |
 | `ALLOW_OPEN_REGISTRATION` | `false` | Exactly `true` lets anyone register; anything else means first account only. |
+| `GOOGLE_CLIENT_ID` | *(empty)* | OAuth client ID for Sign in with Google. Empty means the app is password-only. |
+| `GOOGLE_CLIENT_SECRET` | *(empty)* | OAuth client secret. Must pair with the ID. |
+| `GOOGLE_REDIRECT_URL` | *(empty)* | Absolute callback URL, e.g. `https://app.example.com/api/auth/google/callback`. Must byte-match the Google console entry. |
 | `VAPID_PUBLIC_KEY` | *(empty)* | Web push public key. Empty disables push. |
 | `VAPID_PRIVATE_KEY` | *(empty)* | Web push private key. Must pair with the public one. |
 | `VAPID_SUBJECT` | `mailto:admin@example.com` | `mailto:` or URL identifying the sender to the push service. |
@@ -162,6 +171,91 @@ The `mcp`/`apiclient` side reads `MCP_APP_URL` and `MCP_APP_TOKEN` (or
 `~/.config/<app>.json`) - see [MCP servers](#mcp-servers). `llm.ConfigFromEnv`
 reads `LLM_PROVIDER` and the per-provider key/model vars - see
 [Calling an LLM](#calling-an-llm).
+
+## Sign in with Google
+
+Optional, and off unless you configure it. `RegisterGoogle` mounts two GET
+endpoints that between them run a plain server-side OAuth 2.0 authorization code
+flow and finish by setting the ordinary session cookie:
+
+```go
+if cfg.GoogleClientID != "" {
+    if err := authSvc.RegisterGoogle(srv.API, auth.GoogleConfig{
+        ClientID:     cfg.GoogleClientID,
+        ClientSecret: cfg.GoogleClientSecret,
+        RedirectURL:  cfg.GoogleRedirectURL,
+        // SuccessPath: "/",      // where the browser lands, signed in
+        // FailurePath: "/login", // ...and where it lands when it doesn't
+    }); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+The SPA side is a link. There is no Google script tag, no client-side SDK:
+
+```html
+<a href="/api/auth/google/start">Sign in with Google</a>
+```
+
+Set the redirect URL to `https://your-app/api/auth/google/callback` in both the
+env and the Google Cloud console - they have to match exactly. The client needs
+the `openid` and `email` scopes, which the code requests for you; nothing here
+wants a name or a picture.
+
+### One account, two doors
+
+A Google sign-in is matched to a user by **verified email**, case-insensitively.
+That's what makes "log in with either" work with no linking step: the row that
+`POST /api/auth/register` created is the row Google finds. There is no
+`google_sub` column and no identities table.
+
+### Who gets in
+
+| Situation | What happens |
+|---|---|
+| An active user has that email | Signed in. Always. |
+| No such user, `ALLOW_OPEN_REGISTRATION=true` | Account created, signed in. |
+| No such user, registration closed (the default) | Bounced to `/login?error=registration_closed`. |
+
+So by default you have to create the account first, and after that only that
+person's Google account opens the door. Note that Google will **not** bootstrap
+the very first account, even though `POST /api/auth/register` is first-user-open:
+keeping that one door password-only guarantees the account a single-user app runs
+on always has a password to fall back on if the Google client ever breaks.
+
+There's no separate allowlist, on purpose. When `ALLOW_OPEN_REGISTRATION=true`,
+`POST /api/auth/register` is already open to anyone who can reach it, so a
+Google-only allowlist would gate one door while the other stayed open - security
+that reads real and isn't. If you want "only these people can sign themselves
+up", that belongs on registration generally, not on Google.
+
+An account created *by* Google has no usable password: `users.password_hash`
+stays `NOT NULL` and gets the hash of a random value that is generated at
+signup and never stored, so password login fails for it exactly like a wrong
+password does. There's no set-password endpoint in the foundation, so those
+accounts are Google-only until an app adds one. That only comes up under
+`ALLOW_OPEN_REGISTRATION=true`.
+
+### Failures
+
+Everything that isn't infrastructure redirects to `FailurePath` with a fixed
+`?error=` code - `oauth_denied`, `invalid_state`, `token_exchange_failed`,
+`invalid_id_token`, `registration_closed`. Google's own error strings are never
+passed through. A person halfway through a browser flow should land back on the
+login screen, not on a page of `application/problem+json`.
+
+### What it deliberately doesn't do
+
+- **No JWKS client, no signature verification.** The ID token arrives in the body
+  of a response to a request this process made, to a pinned HTTPS URL, with the
+  client secret. TLS already answers "is this from Google", which is the
+  exception [OIDC Core 3.1.3.7](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation)
+  carves out. The claims are still checked: issuer, audience (that the token was
+  minted for *this* client), expiry, and `email_verified`.
+- **No PKCE.** This is a confidential client with a secret, so an intercepted
+  authorization code can't be redeemed by whoever intercepted it, and the `state`
+  cookie already covers callback CSRF.
 
 ## The API-first loop
 
@@ -616,3 +710,13 @@ these - if you think one has actually become a problem, say so and make the case
   domain is same-site, so it can send authenticated requests to this app
   origin. Please don't add a CSRF token library or origin check; if you need
   sibling apps under one apex domain isolated, say so and make the case.
+
+- **Google sign-in identifies people by email, not by `sub`.** Google's stable
+  account identifier is `sub`; email is what can change. Matching on the verified
+  email instead is what makes one account work with both doors and no linking
+  table, and it costs nothing when the address is a Gmail one or on a domain I
+  own - Gmail addresses are never reissued. The reachable edge is a Google
+  account whose address is on a domain *someone else* controls: reassign that
+  mailbox and the new holder can sign in as the old one. Point this at Gmail or
+  a domain you own. Please don't add a `google_sub` column and the "the sub
+  changed, now what" branch that comes with it.
