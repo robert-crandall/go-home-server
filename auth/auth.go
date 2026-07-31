@@ -107,6 +107,32 @@ func NewService(db *pgxpool.Pool, secureCookies bool) *Service {
 
 // --- user + session persistence -------------------------------------------
 
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// RegistrationOpen reports whether POST /api/auth/register would currently be
+// accepted. Always true when OpenRegistration is set.
+//
+// Advisory only: the register handler re-checks under an advisory lock, so a
+// caller can still lose the race between asking and posting.
+func (s *Service) RegistrationOpen(ctx context.Context) (bool, error) {
+	return s.registrationOpen(ctx, s.db)
+}
+
+func (s *Service) registrationOpen(ctx context.Context, q rowQuerier) (bool, error) {
+	if s.OpenRegistration {
+		return true, nil
+	}
+
+	var count int
+	if err := q.QueryRow(ctx,
+		`SELECT count(*) FROM users WHERE deleted_at IS NULL`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 0, nil
+}
+
 // CreateUser hashes the password and inserts a new user.
 func (s *Service) CreateUser(ctx context.Context, email, password string) (User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -146,14 +172,13 @@ func (s *Service) registerUser(ctx context.Context, email, password string) (Use
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, registrationLock); err != nil {
 			return User{}, "", time.Time{}, err
 		}
-		var count int
-		if err := tx.QueryRow(ctx,
-			`SELECT count(*) FROM users WHERE deleted_at IS NULL`).Scan(&count); err != nil {
-			return User{}, "", time.Time{}, err
-		}
-		if count > 0 {
-			return User{}, "", time.Time{}, errRegistrationClosed
-		}
+	}
+	open, err := s.registrationOpen(ctx, tx)
+	if err != nil {
+		return User{}, "", time.Time{}, err
+	}
+	if !open {
+		return User{}, "", time.Time{}, errRegistrationClosed
 	}
 
 	var u User

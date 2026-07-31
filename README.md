@@ -42,11 +42,13 @@ go-home-server/
   Postgres, delivered as an httpOnly cookie. `auth.Middleware` resolves the user
   onto the request context; `auth.RequireUser` guards a handler. Registration is
   first-user-only by default (race-safe via a DB advisory lock); set
-  `ALLOW_OPEN_REGISTRATION=true` for a multi-user app. Sessions slide: every
-  request that authenticates by cookie pushes the expiry 30 days out again, so
-  a session dies after 30 days of *inactivity*, not 30 days after login. Only
-  `/api` requests slide one, so an app whose pages never call the API won't keep
-  a session alive.
+  `ALLOW_OPEN_REGISTRATION=true` for a multi-user app. An app can call
+  `authSvc.RegistrationOpen(ctx)` to ask whether the built-in registration path
+  is currently open; the answer is advisory because the handler re-checks under
+  its transaction lock. Sessions slide: every request that authenticates by
+  cookie pushes the expiry 30 days out again, so a session dies after 30 days of
+  *inactivity*, not 30 days after login. Only `/api` requests slide one, so an
+  app whose pages never call the API won't keep a session alive.
 - **API tokens** (opt-in) - personal access tokens so scripts, cron jobs, or an
   MCP server can call the API with `Authorization: Bearer <token>` instead of a
   browser cookie. Pass `HumaConfig: authSvc.TokenHumaConfig` to `server.New`,
@@ -597,8 +599,11 @@ these - if you think one has actually become a problem, say so and make the case
   the first account exists. The gate is also recomputed per request rather than
   latched, so soft-deleting the last user or booting against an empty database
   reopens it, silently. Both are fine here: the URLs are internal, and if the
-  window ever does reopen I'll just register again. Not worth a `cmd/createuser`
-  bootstrap command, a latched gate, or a one-time signup token.
+  window ever does reopen I'll just register again. Re-registering creates a new
+  user ID, so rows owned by the old user remain invisible to the new account; if
+  the old user is hard-deleted, foreign keys configured with `ON DELETE CASCADE`
+  will delete their rows. Not worth a `cmd/createuser` bootstrap command, a
+  latched gate, or a one-time signup token.
 
 - **CSRF protection is `SameSite=Lax`.** The foundation adds no CSRF token or
   origin check. Explicit `SameSite=Lax` withholds the session cookie on
