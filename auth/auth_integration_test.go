@@ -98,3 +98,45 @@ func TestOpenRegistrationAllowsMany(t *testing.T) {
 		t.Fatalf("expected 3 user rows, got %d", count)
 	}
 }
+
+func TestRegistrationOpenMatchesRegistrationGate(t *testing.T) {
+	pool := testPool(t)
+	svc := NewService(pool, false)
+	ctx := context.Background()
+
+	assertOpen := func(want bool) {
+		t.Helper()
+		got, err := svc.RegistrationOpen(ctx)
+		if err != nil {
+			t.Fatalf("registration open: %v", err)
+		}
+		if got != want {
+			t.Fatalf("RegistrationOpen() = %t, want %t", got, want)
+		}
+	}
+
+	assertOpen(true)
+
+	u, err := svc.CreateUser(ctx, "existing@example.com", "supersecret")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	assertOpen(false)
+
+	svc.OpenRegistration = true
+	assertOpen(true)
+	svc.OpenRegistration = false
+
+	if _, err := pool.Exec(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, u.ID); err != nil {
+		t.Fatalf("soft delete user: %v", err)
+	}
+	assertOpen(true)
+
+	replacement, _, _, err := svc.registerUser(ctx, "replacement@example.com", "supersecret")
+	if err != nil {
+		t.Fatalf("register replacement: %v", err)
+	}
+	if replacement.ID == u.ID {
+		t.Fatalf("replacement user ID = %d, want a new ID", replacement.ID)
+	}
+}
