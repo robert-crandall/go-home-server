@@ -35,6 +35,15 @@ type Config struct {
 	// closes). Set ALLOW_OPEN_REGISTRATION=true for a genuinely multi-user app.
 	AllowOpenRegistration bool
 
+	// Google OAuth client for "Sign in with Google". All three must be set for
+	// auth.RegisterGoogle to be worth calling; empty means the app is
+	// password-only. GoogleRedirectURL is the absolute URL Google sends the
+	// browser back to and must match the Cloud console entry exactly, e.g.
+	// https://app.example.com/api/auth/google/callback.
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
+
 	// UploadDir is the directory file uploads are written to. It has no
 	// default on purpose: in production this is a bind-mounted host directory,
 	// and guessing a path would mean silently writing to the container's
@@ -59,6 +68,9 @@ func Load() (Config, error) {
 		VAPIDPrivate:          os.Getenv("VAPID_PRIVATE_KEY"),
 		VAPIDSubject:          getenv("VAPID_SUBJECT", "mailto:admin@example.com"),
 		AllowOpenRegistration: os.Getenv("ALLOW_OPEN_REGISTRATION") == "true",
+		GoogleClientID:        os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret:    os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURL:     os.Getenv("GOOGLE_REDIRECT_URL"),
 		UploadDir:             os.Getenv("UPLOAD_DIR"),
 		UploadMaxBytes:        getenvInt64("UPLOAD_MAX_BYTES"),
 	}
