@@ -41,9 +41,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Dependabot is a GitHub App: filter with --app. Do NOT select on a
+          # --json author.login - gh renders bot logins there as
+          # "app/dependabot", so comparing it to the API's "dependabot[bot]"
+          # (what the job `if:` above matches) finds nothing, and the step exits
+          # 0 reporting "nothing to merge" while the run stays green. This file
+          # shipped exactly that bug.
+          #
+          # --head matches on branch name alone, so .[0] is the first match,
+          # not the only possible one.
           pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open \
-                 --json number,author \
-                 --jq '.[] | select(.author.login=="dependabot[bot]") | .number' | head -n1)
+                 --app dependabot --json number --jq '.[0].number // empty')
           if [ -z "$pr" ]; then
             echo "No open Dependabot PR for $BRANCH; nothing to merge."
             exit 0
