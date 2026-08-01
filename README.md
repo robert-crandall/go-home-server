@@ -45,7 +45,10 @@ go-home-server/
   `ALLOW_OPEN_REGISTRATION=true` for a multi-user app. An app can call
   `authSvc.RegistrationOpen(ctx)` to ask whether the built-in registration path
   is currently open; the answer is advisory because the handler re-checks under
-  its transaction lock. Sessions slide: every request that authenticates by
+  its transaction lock. A user carries an optional display `name` - accepted at
+  registration, changed later with `PATCH /api/auth/me`, and `""` when unset, so
+  an app can render it or fall back to the email without unwrapping a null.
+  Sessions slide: every request that authenticates by
   cookie pushes the expiry 30 days out again, so a session dies after 30 days of
   *inactivity*, not 30 days after login. Only `/api` requests slide one, so an
   app whose pages never call the API won't keep a session alive.
@@ -236,6 +239,10 @@ signup and never stored, so password login fails for it exactly like a wrong
 password does. There's no set-password endpoint in the foundation, so those
 accounts are Google-only until an app adds one. That only comes up under
 `ALLOW_OPEN_REGISTRATION=true`.
+
+It also has no display name: the flow asks for `openid email` and not `profile`,
+which would widen the consent screen for a cosmetic field. `PATCH /api/auth/me`
+sets one after the fact.
 
 ### Failures
 

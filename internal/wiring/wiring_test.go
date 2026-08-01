@@ -245,6 +245,7 @@ func TestFoundationRegistersOnOneAPI(t *testing.T) {
 		"login":                   {route: "POST /api/auth/login", security: public, errors: []string{"401", "422", "500"}},
 		"logout":                  {route: "POST /api/auth/logout", security: public, errors: []string{"422", "500"}},
 		"current-user":            {route: "GET /api/auth/me", security: sessionOrBearer, errors: []string{"401", "500"}},
+		"update-current-user":     {route: "PATCH /api/auth/me", security: sessionOrBearer, errors: []string{"401", "404", "422", "500"}},
 		"google-login-start":      {route: "GET /api/auth/google/start", security: public, errors: []string{"default"}},
 		"google-login-callback":   {route: "GET /api/auth/google/callback", security: public, errors: []string{"422", "500"}},
 		"create-api-token":        {route: "POST /api/tokens", security: sessionOnly, errors: []string{"401", "403", "422", "500"}},

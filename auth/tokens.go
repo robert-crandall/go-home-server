@@ -211,12 +211,12 @@ func (s *Service) userFromAPIToken(ctx context.Context, plaintext string) (User,
 		lastUsed   pgtype.Timestamptz
 	)
 	err := s.db.QueryRow(ctx,
-		`SELECT u.id, u.email, u.created_at, t.secret_hash, t.expires_at, t.last_used_at
+		`SELECT u.id, u.email, u.name, u.created_at, t.secret_hash, t.expires_at, t.last_used_at
 		   FROM api_tokens t
 		   JOIN users u ON u.id = t.user_id
 		  WHERE t.id = $1 AND u.deleted_at IS NULL`,
 		id,
-	).Scan(&u.ID, &u.Email, &u.CreatedAt, &storedHash, &expires, &lastUsed)
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &storedHash, &expires, &lastUsed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
