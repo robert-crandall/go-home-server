@@ -43,8 +43,12 @@ const (
 
 // User is the authenticated principal. It deliberately omits the password hash.
 type User struct {
-	ID        int64     `json:"id"`
-	Email     string    `json:"email"`
+	ID    int64  `json:"id"`
+	Email string `json:"email"`
+	// Name is an optional display name. "" means unset - there is no separate
+	// null state, so an app can render it (or fall back to Email) without
+	// unwrapping anything.
+	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -134,6 +138,10 @@ func (s *Service) registrationOpen(ctx context.Context, q rowQuerier) (bool, err
 }
 
 // CreateUser hashes the password and inserts a new user.
+//
+// It takes no name: the signature is vendored by every app on this foundation,
+// so it stays put and the column default leaves Name as "". Set one afterwards
+// through PATCH /api/auth/me.
 func (s *Service) CreateUser(ctx context.Context, email, password string) (User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -142,9 +150,9 @@ func (s *Service) CreateUser(ctx context.Context, email, password string) (User,
 	var u User
 	err = s.db.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash) VALUES ($1, $2)
-		 RETURNING id, email, created_at`,
+		 RETURNING id, email, name, created_at`,
 		email, string(hash),
-	).Scan(&u.ID, &u.Email, &u.CreatedAt)
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
 	return u, err
 }
 
@@ -152,7 +160,7 @@ func (s *Service) CreateUser(ctx context.Context, email, password string) (User,
 // a single transaction. When OpenRegistration is false, it takes a DB advisory
 // lock and refuses if any active user already exists, so concurrent first
 // registrations can't both win the race.
-func (s *Service) registerUser(ctx context.Context, email, password string) (User, string, time.Time, error) {
+func (s *Service) registerUser(ctx context.Context, email, password, name string) (User, string, time.Time, error) {
 	// Hash outside the transaction to keep the lock hold time short.
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -183,10 +191,10 @@ func (s *Service) registerUser(ctx context.Context, email, password string) (Use
 
 	var u User
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO users (email, password_hash) VALUES ($1, $2)
-		 RETURNING id, email, created_at`,
-		email, string(hash),
-	).Scan(&u.ID, &u.Email, &u.CreatedAt); err != nil {
+		`INSERT INTO users (email, password_hash, name) VALUES ($1, $2, $3)
+		 RETURNING id, email, name, created_at`,
+		email, string(hash), name,
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			return User{}, "", time.Time{}, errEmailTaken
 		}
@@ -214,11 +222,11 @@ func (s *Service) authenticate(ctx context.Context, email, password string) (Use
 		hash string
 	)
 	err := s.db.QueryRow(ctx,
-		`SELECT id, email, created_at, password_hash
+		`SELECT id, email, name, created_at, password_hash
 		   FROM users
 		  WHERE lower(email) = lower($1) AND deleted_at IS NULL`,
 		email,
-	).Scan(&u.ID, &u.Email, &u.CreatedAt, &hash)
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Compare against a dummy hash so a missing user takes about the same
 		// time as a wrong password, preventing email enumeration by timing.
@@ -271,9 +279,9 @@ func (s *Service) userFromToken(ctx context.Context, token string) (User, time.T
 		   FROM users u
 		  WHERE s.token_hash = $1 AND u.id = s.user_id
 		    AND s.expires_at > now() AND u.deleted_at IS NULL
-		 RETURNING u.id, u.email, u.created_at`,
+		 RETURNING u.id, u.email, u.name, u.created_at`,
 		hashToken(token), expires,
-	).Scan(&u.ID, &u.Email, &u.CreatedAt)
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, time.Time{}, ErrNotFound
 	}
@@ -286,6 +294,24 @@ func (s *Service) userFromToken(ctx context.Context, token string) (User, time.T
 func (s *Service) deleteSession(ctx context.Context, token string) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, hashToken(token))
 	return err
+}
+
+// updateName sets the display name and returns the user as it now stands. The
+// deleted_at guard is the same one every other lookup carries, so a user who
+// was soft-deleted after the middleware resolved them matches nothing rather
+// than being written to; that's the ErrNotFound case.
+func (s *Service) updateName(ctx context.Context, id int64, name string) (User, error) {
+	var u User
+	err := s.db.QueryRow(ctx,
+		`UPDATE users SET name = $2, updated_at = now()
+		  WHERE id = $1 AND deleted_at IS NULL
+		 RETURNING id, email, name, created_at`,
+		id, name,
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return u, err
 }
 
 // --- cookies ---------------------------------------------------------------
@@ -445,6 +471,26 @@ type credentialsInput struct {
 	Body credentials
 }
 
+// registration is credentials plus an optional display name. It is spelled out
+// rather than embedding credentials so login doesn't grow a name field it has
+// no use for. The omitempty is what makes huma mark name optional, so an app
+// that posts only {email, password} keeps working.
+type registration struct {
+	Email    string `json:"email" format:"email" doc:"Email address"`
+	Password string `json:"password" minLength:"8" maxLength:"72" doc:"Password (8-72 chars)"`
+	Name     string `json:"name,omitempty" maxLength:"100" doc:"Display name (optional)"`
+}
+
+type registrationInput struct {
+	Body registration
+}
+
+type profileInput struct {
+	Body struct {
+		Name string `json:"name" maxLength:"100" doc:"Display name; empty clears it"`
+	}
+}
+
 type sessionOutput struct {
 	SetCookie http.Cookie `header:"Set-Cookie"`
 	Body      User
@@ -460,8 +506,8 @@ func (s *Service) Register(api huma.API) {
 		Tags:        []string{"auth"},
 		Errors:      []int{http.StatusForbidden, http.StatusConflict, http.StatusUnprocessableEntity},
 		Security:    apisecurity.Public(),
-	}, func(ctx context.Context, in *credentialsInput) (*sessionOutput, error) {
-		u, token, exp, err := s.registerUser(ctx, in.Body.Email, in.Body.Password)
+	}, func(ctx context.Context, in *registrationInput) (*sessionOutput, error) {
+		u, token, exp, err := s.registerUser(ctx, in.Body.Email, in.Body.Password, strings.TrimSpace(in.Body.Name))
 		if err != nil {
 			switch {
 			case errors.Is(err, errRegistrationClosed):
@@ -539,6 +585,29 @@ func (s *Service) Register(api huma.API) {
 			return nil, err
 		}
 		return &struct{ Body User }{Body: u}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-current-user",
+		Method:      http.MethodPatch,
+		Path:        "/api/auth/me",
+		Summary:     "Update the current user",
+		Tags:        []string{"auth"},
+		Errors:      []int{http.StatusUnauthorized, http.StatusNotFound},
+		Security:    apisecurity.User(api),
+	}, func(ctx context.Context, in *profileInput) (*struct{ Body User }, error) {
+		u, err := RequireUser(ctx)
+		if err != nil {
+			return nil, err
+		}
+		updated, err := s.updateName(ctx, u.ID, strings.TrimSpace(in.Body.Name))
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, huma.Error404NotFound("user no longer exists")
+			}
+			return nil, huma.Error500InternalServerError("could not update user", err)
+		}
+		return &struct{ Body User }{Body: updated}, nil
 	})
 }
 

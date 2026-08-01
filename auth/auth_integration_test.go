@@ -51,7 +51,7 @@ func TestFirstUserRegistrationIsSerialized(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			_, _, _, err := svc.registerUser(
-				context.Background(), fmt.Sprintf("user%d@example.com", i), "supersecret")
+				context.Background(), fmt.Sprintf("user%d@example.com", i), "supersecret", "")
 			results <- err
 		}(i)
 	}
@@ -85,7 +85,7 @@ func TestOpenRegistrationAllowsMany(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		if _, _, _, err := svc.registerUser(
-			context.Background(), fmt.Sprintf("open%d@example.com", i), "supersecret"); err != nil {
+			context.Background(), fmt.Sprintf("open%d@example.com", i), "supersecret", ""); err != nil {
 			t.Fatalf("registration %d failed: %v", i, err)
 		}
 	}
@@ -132,7 +132,7 @@ func TestRegistrationOpenMatchesRegistrationGate(t *testing.T) {
 	}
 	assertOpen(true)
 
-	replacement, _, _, err := svc.registerUser(ctx, "replacement@example.com", "supersecret")
+	replacement, _, _, err := svc.registerUser(ctx, "replacement@example.com", "supersecret", "")
 	if err != nil {
 		t.Fatalf("register replacement: %v", err)
 	}

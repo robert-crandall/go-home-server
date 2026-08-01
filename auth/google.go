@@ -118,8 +118,9 @@ func newGoogleAuth(cfg GoogleConfig) (*googleAuth, error) {
 			ClientSecret: cfg.ClientSecret,
 			RedirectURL:  cfg.RedirectURL,
 			// openid is what makes Google return an id_token at all; email is
-			// what puts the email and email_verified claims in it. Nothing here
-			// needs a name or picture, so profile is left off.
+			// what puts the email and email_verified claims in it. profile is
+			// still left off even though users carry a display name: it widens
+			// the consent screen, and PATCH /api/auth/me sets the name.
 			Scopes:   []string{"openid", "email"},
 			Endpoint: googleEndpoint,
 		},
@@ -210,11 +211,11 @@ func parseIDToken(raw, clientID string) (googleClaims, error) {
 func (s *Service) userByEmail(ctx context.Context, email string) (User, error) {
 	var u User
 	err := s.db.QueryRow(ctx,
-		`SELECT id, email, created_at
+		`SELECT id, email, name, created_at
 		   FROM users
 		  WHERE lower(email) = lower($1) AND deleted_at IS NULL`,
 		email,
-	).Scan(&u.ID, &u.Email, &u.CreatedAt)
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -261,6 +262,9 @@ func (s *Service) userForGoogle(ctx context.Context, email string) (User, error)
 // that is generated here and never stored. Nothing can present the plaintext,
 // so password login fails for this account exactly like a wrong password does,
 // and a future set-password flow can simply overwrite the hash.
+//
+// The account starts with no display name, since the ID token doesn't carry
+// one at the scopes this asks for. PATCH /api/auth/me sets it afterwards.
 func (s *Service) createGoogleUser(ctx context.Context, email string) (User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(randomToken()), bcrypt.DefaultCost)
 	if err != nil {
@@ -269,9 +273,9 @@ func (s *Service) createGoogleUser(ctx context.Context, email string) (User, err
 	var u User
 	err = s.db.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash) VALUES ($1, $2)
-		 RETURNING id, email, created_at`,
+		 RETURNING id, email, name, created_at`,
 		email, string(hash),
-	).Scan(&u.ID, &u.Email, &u.CreatedAt)
+	).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
 	return u, err
 }
 
