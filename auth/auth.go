@@ -347,7 +347,15 @@ type ctxKey int
 const (
 	userKey ctxKey = iota
 	sourceKey
+	sessionKey
+	errorKey
 )
+
+// Session identifies the database session that authenticated a request.
+// TokenHash is the stored session key, never the raw cookie value.
+type Session struct {
+	TokenHash string
+}
 
 // AuthSource records which credential authenticated a request. Its zero value
 // is AuthNone, so an unset value can never be mistaken for a real session -
@@ -372,6 +380,15 @@ func withUser(ctx context.Context, u User, src AuthSource) context.Context {
 	return context.WithValue(ctx, sourceKey, src)
 }
 
+// withLookupError records operational lookup failures. ErrNotFound represents
+// an invalid credential, so it remains the normal unauthenticated case.
+func withLookupError(ctx context.Context, err error) context.Context {
+	if err == nil || errors.Is(err, ErrNotFound) {
+		return ctx
+	}
+	return context.WithValue(ctx, errorKey, err)
+}
+
 // Middleware resolves the credential on a request into a User and stashes it on
 // the request context. It never blocks the request; use RequireUser inside a
 // handler to enforce authentication. It only does work for API requests, so
@@ -394,19 +411,27 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		if isAPIPath(r.URL.Path) {
 			if s.apiTokensEnabled && hasBearerScheme(r) {
 				if token, ok := bearerToken(r); ok {
-					if u, err := s.userFromAPIToken(r.Context(), token); err == nil {
+					u, err := s.userFromAPIToken(r.Context(), token)
+					if err == nil {
 						r = r.WithContext(withUser(r.Context(), u, AuthToken))
+					} else {
+						r = r.WithContext(withLookupError(r.Context(), err))
 					}
 				}
 			} else if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
-				if u, expires, err := s.userFromToken(r.Context(), c.Value); err == nil {
+				u, expires, err := s.userFromToken(r.Context(), c.Value)
+				if err == nil {
 					// The lookup just slid the row's expiry; re-send the same
 					// token so the browser's copy expires with it. Written
 					// before the handler runs, so a handler that emits its own
 					// session cookie - only logout does - replaces this one.
 					refreshed := s.cookie(c.Value, expires)
 					http.SetCookie(w, &refreshed)
-					r = r.WithContext(withUser(r.Context(), u, AuthSession))
+					ctx := withUser(r.Context(), u, AuthSession)
+					ctx = context.WithValue(ctx, sessionKey, Session{TokenHash: hashToken(c.Value)})
+					r = r.WithContext(ctx)
+				} else {
+					r = r.WithContext(withLookupError(r.Context(), err))
 				}
 			}
 		}
@@ -424,6 +449,20 @@ func isAPIPath(p string) bool {
 func UserFromContext(ctx context.Context) (User, bool) {
 	u, ok := ctx.Value(userKey).(User)
 	return u, ok
+}
+
+// SessionFromContext returns the database session that authenticated the
+// request. It is present only for successful cookie authentication.
+func SessionFromContext(ctx context.Context) (Session, bool) {
+	session, ok := ctx.Value(sessionKey).(Session)
+	return session, ok
+}
+
+// ErrorFromContext returns an operational credential lookup failure, if any.
+// Missing, malformed, expired, or otherwise invalid credentials return nil.
+func ErrorFromContext(ctx context.Context) error {
+	err, _ := ctx.Value(errorKey).(error)
+	return err
 }
 
 // AuthSourceFromContext returns the credential type that authenticated the
