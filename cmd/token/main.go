@@ -8,9 +8,13 @@
 // anything. Going through HTTP rather than the database also means this works
 // from any machine against a deployed app, and reuses the app's real auth path.
 //
-//	go run github.com/robert-crandall/go-home-server/cmd/token \
+//	go run github.com/robert-crandall/go-home-server/cmd/token@v0.1.9 \
 //	  -url https://my-app.example.com -email you@example.com \
 //	  -name my-app-mcp -config my-app
+//
+// The @version suffix is load-bearing from inside another module: a plain
+// "go run <pkg>" resolves against that module's go.sum, which won't carry this
+// tool's own dependencies unless something in the app imports it.
 //
 // Without -config the plaintext token is printed on stdout and nothing else, so
 // it composes with a pipeline; every prompt and diagnostic goes to stderr.
