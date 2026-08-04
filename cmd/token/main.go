@@ -59,7 +59,14 @@ func main() {
 		"Bare app name: write ~/.config/<name>.json (mode 0600) instead of printing the token")
 	flag.Parse()
 
-	if strings.TrimSpace(*email) == "" {
+	// The env fallbacks exist so a downstream Makefile can drive this, and a
+	// value that came from $(shell ...) or a copy/paste can carry a stray
+	// space. Trim once here so every use below sees the same clean value.
+	for _, v := range []*string{appURL, email, name, configName} {
+		*v = strings.TrimSpace(*v)
+	}
+
+	if *email == "" {
 		log.Fatal("-email is required (or set APP_EMAIL)")
 	}
 
