@@ -32,6 +32,7 @@ go-home-server/
   llm/               # OpenAI / Anthropic / xAI completions behind one interface
   mcp/               # dual-mode (CLI + MCP-over-stdio) harness wrapping the Go MCP SDK
   cmd/vapid/         # generate a VAPID key pair for web push
+  cmd/token/         # mint an API token over the app's own HTTP API
   examples/minimal/  # smallest complete app built on all of the above
   internal/wiring/   # test-only: every endpoint on one huma API
 ```
@@ -66,7 +67,8 @@ go-home-server/
   the plaintext is shown once. A bearer request never falls back to the cookie,
   and token management itself is session-only, so a leaked token can't mint,
   list, or revoke tokens. Apps that omit this pair expose no token endpoints and
-  ignore bearer credentials entirely.
+  ignore bearer credentials entirely. `cmd/token` mints one from a terminal so
+  the first token doesn't need a browser - see [MCP servers](#mcp-servers).
 - **File uploads** - `POST/GET/DELETE /api/files` for per-user files, with the
   bytes on a directory you bind-mount into the container and the metadata in
   Postgres. Photos are the motivating case: the download endpoint streams
@@ -425,7 +427,8 @@ go build -o "$HOME/bin/my-app-mcp" ./cmd/mcp
 ```
 
 The name comes from the Go module path (`github.com/you/my-app` -> `my-app-mcp`),
-which is also the name it reports in the MCP handshake.
+which is also the name it reports in the MCP handshake. `go-home-template` has
+this as `make install-mcp`.
 
 ### Configure it
 
@@ -433,21 +436,37 @@ An installed binary is launched by a desktop client from an arbitrary working
 directory, so it doesn't get to rely on the app's `.env`. It reads
 `~/.config/<app>.json` instead:
 
-```bash
-mkdir -p ~/.config
-cat > ~/.config/my-app.json <<'JSON'
+```json
 {
   "appUrl": "https://my-app.example.com",
   "token": "pat_1_..."
 }
-JSON
-chmod 600 ~/.config/my-app.json
 ```
 
 `appUrl` is the app's origin (default `http://localhost:8080`), not the `/api`
-path. `token` is a personal access token from `POST /api/tokens` - the file holds
-a live credential, hence the `chmod 600`. If you set `XDG_CONFIG_HOME` it goes
+path. `token` is a personal access token from `POST /api/tokens`. The file holds
+a live credential, so it must be mode 0600. If you set `XDG_CONFIG_HOME` it goes
 under that directory instead.
+
+`cmd/token` writes that file for you, so nothing here has to be typed by hand:
+
+```bash
+# from your app repo, pinned to the foundation version it already requires
+go run github.com/robert-crandall/go-home-server/cmd/token@"$(go list -m -f '{{.Version}}' github.com/robert-crandall/go-home-server)" \
+  -url https://my-app.example.com -email you@example.com -name my-app-mcp -config my-app
+```
+
+It prompts for your password with echo off, logs in, mints the token, and writes
+`~/.config/my-app.json` at 0600 (creating `~/.config` if needed). Drop `-config`
+and it prints the token on stdout and nothing else, so it pipes. `MCP_APP_URL`,
+`APP_EMAIL`, and `APP_PASSWORD` fill in the flags non-interactively.
+
+Two things about that invocation. The `@<version>` form is deliberate: run bare,
+`go run` would need the tool's own dependencies in *your* `go.sum`, and nothing
+in your app imports them. And logging in with a password is the only way to get
+the first token - `POST /api/tokens` is session-only, so a token can't mint
+another token. This is exactly what the SPA does; it just skips the browser.
+`go-home-template` wraps the whole thing in `make mcp-token`.
 
 Settings resolve highest-first: `MCP_APP_URL` / `MCP_APP_TOKEN` in the real
 environment, then `~/.config/<app>.json`, then a local `.env`. So a desktop
