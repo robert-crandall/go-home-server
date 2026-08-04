@@ -188,6 +188,12 @@ func TestWriteConfigTightensAnExistingFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"appUrl":"http://localhost:8080","token":"old"}`), 0o644); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
+	// os.WriteFile's mode is subject to the umask, so a umask of 077 would seed
+	// the file at 0600 and this test would pass without testing anything.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod seed config: %v", err)
+	}
+	assertMode(t, path, 0o644)
 
 	if _, err := writeConfig("my-app", "http://localhost:8080", "pat_9_new"); err != nil {
 		t.Fatalf("writeConfig: %v", err)

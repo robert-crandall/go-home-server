@@ -50,7 +50,7 @@ func main() {
 	log.SetPrefix("token: ")
 
 	appURL := flag.String("url", firstNonEmpty(os.Getenv("MCP_APP_URL"), apiclient.DefaultBaseURL),
-		"App origin (scheme://host:port), not the /api path. Defaults to $MCP_APP_URL.")
+		"App origin (scheme://host:port), not the /api path. Defaults to $MCP_APP_URL, else "+apiclient.DefaultBaseURL+".")
 	email := flag.String("email", os.Getenv("APP_EMAIL"),
 		"Email of the account to mint the token for. Defaults to $APP_EMAIL.")
 	name := flag.String("name", "cli",
