@@ -648,8 +648,15 @@ decoding with them - so the same request would behave three ways. Nullable
 fields and union types are documented on all three but left out until something
 needs them.
 
-Two more things:
+Three more things:
 
+- **An `enum` value your own parser rejects is a silent drop, not an error.**
+  The schema constrains the provider, not you. A conforming model picks a value
+  off your list, so a variant your parser doesn't recognise still arrives as
+  valid JSON of the declared type and passes every check here - and then a
+  tolerant `UnmarshalJSON` discards it with nothing logged. A one-character
+  disagreement between the enum and the parser loses the field outright. Worth a
+  test that feeds every variant an enum offers through the real parser.
 - **`Stream` rejects a `Schema`.** Anthropic delivers a constrained answer as
   tool input, which arrives as `input_json_delta` rather than `text_delta`, so a
   stream would call your callback zero times. Use `Complete`.
