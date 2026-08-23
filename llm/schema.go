@@ -49,9 +49,21 @@ import (
 // conforming model picks a value off the list, so a variant your own parser
 // doesn't recognise still arrives as valid JSON of the declared type and passes
 // every check here - and then whatever tolerant unmarshalling you have drops it
-// with no error anywhere. A one-character disagreement between the enum and the
-// parser silently loses the field. Worth a test that feeds every variant an
-// enum offers through the real parser.
+// with no error anywhere. The reverse is just as quiet: a value your parser
+// accepts but the enum doesn't offer becomes impossible for the model to
+// produce, so that case silently never happens again. enum is the one part of
+// the subset a caller can hold wrong, and it is wrong invisibly in both
+// directions - so derive it from the parser's own set of values rather than
+// writing the list out twice.
+//
+// What is deliberately not checked here: anything a provider would reject
+// loudly. The test for whether a rule belongs in this validator is whether
+// getting it wrong fails silently. Semantic divergence does, which is the whole
+// reason for the subset. Provider quotas - OpenAI's limits on nesting depth,
+// property count and so on - do not: they come back as a 400 carrying the real
+// limit. Checking them here would replace an accurate error with a guess at it,
+// and because this runs inside Complete with no way to opt out, a wrong guess
+// blocks a schema the provider would have accepted.
 type Schema struct {
 	// Name identifies the schema to the provider. Required, and it must match
 	// schemaNamePattern - Anthropic documents that regex for a tool name and
