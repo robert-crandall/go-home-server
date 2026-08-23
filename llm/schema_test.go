@@ -243,30 +243,39 @@ func TestAnthropicSchemaRejectsEveryStopReasonButToolUse(t *testing.T) {
 	}
 }
 
-func TestAnthropicSchemaRejectsZeroMatchingToolBlocks(t *testing.T) {
-	for name, reply := range map[string]string{
-		// tool_choice should make both impossible. "Should" is not "did".
-		"answered with text": `{"stop_reason":"tool_use","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}`,
-		"different tool":     `{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"other","input":{"summary":"ok"}}]}`,
+// tool_choice names one tool and disables parallel use, so none of these should
+// be reachable. "Should" is not "did", and each one loses data a different way.
+func TestAnthropicSchemaRejectsAnythingButOneToolBlock(t *testing.T) {
+	for name, tc := range map[string]struct{ reply, want string }{
+		"answered with text": {
+			`{"stop_reason":"tool_use","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}`,
+			`no "tool_use" block`,
+		},
+		"called a different tool": {
+			`{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"other","input":{"summary":"ok"}}]}`,
+			`called tool "other"`,
+		},
+		"two blocks, same name": {
+			`{"stop_reason":"tool_use","content":[
+				{"type":"tool_use","name":"journal_synopsis","input":{"summary":"first"}},
+				{"type":"tool_use","name":"journal_synopsis","input":{"summary":"second"}}]}`,
+			"want exactly one",
+		},
+		// Counting only name-matching blocks would call this one "exactly one"
+		// and drop the other call on the floor.
+		"two blocks, mixed names": {
+			`{"stop_reason":"tool_use","content":[
+				{"type":"tool_use","name":"journal_synopsis","input":{"summary":"first"}},
+				{"type":"tool_use","name":"other","input":{"summary":"second"}}]}`,
+			"want exactly one",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := completeSchema(t, Anthropic, anthropicCfg, reply)
-			if err == nil || !strings.Contains(err.Error(), "no \"tool_use\" block") {
-				t.Fatalf("error = %v, want a missing-tool_use error", err)
+			_, err := completeSchema(t, Anthropic, anthropicCfg, tc.reply)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
 		})
-	}
-}
-
-// Picking the first would silently discard the rest, which is the same class of
-// bug as accepting a truncated object.
-func TestAnthropicSchemaRejectsMultipleMatchingToolBlocks(t *testing.T) {
-	reply := `{"stop_reason":"tool_use","content":[
-		{"type":"tool_use","name":"journal_synopsis","input":{"summary":"first"}},
-		{"type":"tool_use","name":"journal_synopsis","input":{"summary":"second"}}]}`
-	_, err := completeSchema(t, Anthropic, anthropicCfg, reply)
-	if err == nil || !strings.Contains(err.Error(), "want exactly one") {
-		t.Fatalf("error = %v, want a too-many-blocks error", err)
 	}
 }
 
@@ -414,10 +423,21 @@ func TestSchemaValidationRejectsWhatTheProvidersDisagreeAbout(t *testing.T) {
 		"enum on a number": {fmt.Sprintf(obj, `{"type":"number","enum":[1]}`), `"enum"`},
 
 		// JSON null unmarshals into anything without error and leaves the zero
-		// value, so these two would otherwise read as a valid enum variant and
-		// as additionalProperties: false.
+		// value, so absent, null, and the zero value are one thing unless every
+		// optional field is checked by hand. Without that, these read as a valid
+		// enum variant, as additionalProperties: false, as a description, and as
+		// a property named "".
 		"null enum variant":         {fmt.Sprintf(obj, `{"type":"string","enum":["a",null]}`), "not string"},
 		"null additionalProperties": {`{"type":"object","additionalProperties":null,"required":["a"],"properties":{"a":{"type":"string"}}}`, "must set"},
+		"null enum":                 {fmt.Sprintf(obj, `{"type":"string","enum":null}`), `not an array`},
+		"null description":          {fmt.Sprintf(obj, `{"type":"string","description":null}`), `non-string "description"`},
+		"null required element":     {`{"type":"object","additionalProperties":false,"required":[null],"properties":{"":{"type":"string"}}}`, `required[0] is not a string`},
+		"null required":             {`{"type":"object","additionalProperties":false,"required":null,"properties":{"a":{"type":"string"}}}`, `not an array of strings`},
+
+		// The same conflation one level out: a mistyped description or required
+		// entry has to be as loud as a null one.
+		"numeric description":      {fmt.Sprintf(obj, `{"type":"string","description":3}`), `non-string "description"`},
+		"numeric required element": {`{"type":"object","additionalProperties":false,"required":[1],"properties":{"a":{"type":"string"}}}`, `required[0] is not a string`},
 
 		// The recursion has to reach all the way down, not just the root.
 		"bad node two deep": {

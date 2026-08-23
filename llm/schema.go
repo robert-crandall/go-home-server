@@ -137,8 +137,8 @@ func validateSchemaNode(raw json.RawMessage, path string) error {
 	if !ok {
 		return fmt.Errorf("llm: Schema.JSON: %s is missing %q", path, "type")
 	}
-	var typ string
-	if err := json.Unmarshal(rawType, &typ); err != nil {
+	typ, ok := jsonString(rawType)
+	if !ok {
 		return fmt.Errorf("llm: Schema.JSON: %s has a non-string %q: %s", path, "type", rawType)
 	}
 	extra, supported := schemaKeywords[typ]
@@ -160,6 +160,15 @@ func validateSchemaNode(raw json.RawMessage, path string) error {
 		sort.Strings(unknown)
 		return fmt.Errorf("llm: Schema.JSON: %s has unsupported keyword(s) %s on a %q (allowed: %s)",
 			path, strings.Join(quoteAll(unknown), ", "), typ, strings.Join(quoteAll(sortedKeys(allowed)), ", "))
+	}
+
+	// description is allowed everywhere and forwarded verbatim, so it has to be
+	// a string here or the providers each decide for themselves what a
+	// non-string one means.
+	if rawDesc, ok := node["description"]; ok {
+		if _, ok := jsonString(rawDesc); !ok {
+			return fmt.Errorf("llm: Schema.JSON: %s has a non-string %q: %s", path, "description", rawDesc)
+		}
 	}
 
 	switch typ {
@@ -209,9 +218,20 @@ func validateSchemaObject(node map[string]json.RawMessage, path string) error {
 	if !ok {
 		return fmt.Errorf("llm: Schema.JSON: %s is missing %q", path, "required")
 	}
-	var required []string
-	if err := json.Unmarshal(rawRequired, &required); err != nil {
-		return fmt.Errorf("llm: Schema.JSON: %s has a %q that is not an array of strings: %w", path, "required", err)
+	// Decoded element by element rather than straight into []string, because
+	// json.Unmarshal turns a null element into "" without complaining - so
+	// "required": [null] would silently require a property named "".
+	var elems []json.RawMessage
+	if isJSONNull(rawRequired) || json.Unmarshal(rawRequired, &elems) != nil {
+		return fmt.Errorf("llm: Schema.JSON: %s has a %q that is not an array of strings: %s", path, "required", rawRequired)
+	}
+	required := make([]string, len(elems))
+	for i, e := range elems {
+		name, ok := jsonString(e)
+		if !ok {
+			return fmt.Errorf("llm: Schema.JSON: %s %s[%d] is not a string: %s", path, "required", i, e)
+		}
+		required[i] = name
 	}
 
 	// "required" must name every property exactly once. Reporting both
@@ -267,8 +287,8 @@ func validateSchemaEnum(node map[string]json.RawMessage, typ, path string) error
 		return nil
 	}
 	var values []json.RawMessage
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return fmt.Errorf("llm: Schema.JSON: %s has an %q that is not an array: %w", path, "enum", err)
+	if isJSONNull(raw) || json.Unmarshal(raw, &values) != nil {
+		return fmt.Errorf("llm: Schema.JSON: %s has an %q that is not an array: %s", path, "enum", raw)
 	}
 	if len(values) == 0 {
 		return fmt.Errorf("llm: Schema.JSON: %s has an empty %q", path, "enum")
@@ -306,6 +326,20 @@ var errNotJSONNull = errors.New("null")
 // they have to be caught by hand.
 func isJSONNull(raw json.RawMessage) bool {
 	return string(bytes.TrimSpace(raw)) == "null"
+}
+
+// jsonString decodes a JSON string, rejecting null for the reason above. Every
+// string-valued keyword in the subset goes through here so that "absent",
+// "null", and "" stay three different things.
+func jsonString(raw json.RawMessage) (string, bool) {
+	if isJSONNull(raw) {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
 }
 
 // decodeJSONObject reports whether raw is a JSON object and hands back its keys
