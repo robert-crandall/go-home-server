@@ -231,29 +231,36 @@ func (p *anthropicProvider) complete(ctx context.Context, req Request, model str
 //     and truncated JSON is invalid JSON. The reason is named rather than
 //     matched against a list of known-bad ones, so a stop_reason Anthropic adds
 //     later is loud instead of silently accepted.
-//   - Zero matching blocks means the model answered with prose instead of
-//     calling the tool. tool_choice should prevent that; if it doesn't, an
-//     error beats a Response holding nothing.
-//   - More than one means picking the first would silently discard the rest.
-//     disable_parallel_tool_use is meant to prevent this too.
+//   - Zero blocks means the model answered with prose instead of calling the
+//     tool. tool_choice should prevent that; if it doesn't, an error beats a
+//     Response holding nothing.
+//   - More than one means picking one would silently discard the rest.
+//     disable_parallel_tool_use is meant to prevent this too. Counting every
+//     tool_use block rather than only the ones named name is what makes that a
+//     real check: filtering by name first would let an extra call to some other
+//     tool through as "exactly one".
 func anthropicToolInput(name string, out anthropicResponse) (string, error) {
 	if out.StopReason != anthropicToolUse {
 		return "", fmt.Errorf("llm: %s: structured response did not complete: stop_reason %q, want %q", Anthropic, out.StopReason, anthropicToolUse)
 	}
 
+	var called string
 	var input json.RawMessage
 	found := 0
 	for _, block := range out.Content {
-		if block.Type == anthropicToolUse && block.Name == name {
-			found++
-			input = block.Input
+		if block.Type != anthropicToolUse {
+			continue
 		}
+		found++
+		called, input = block.Name, block.Input
 	}
 	switch {
 	case found == 0:
-		return "", fmt.Errorf("llm: %s: response contained no %q block named %q", Anthropic, anthropicToolUse, name)
+		return "", fmt.Errorf("llm: %s: response contained no %q block", Anthropic, anthropicToolUse)
 	case found > 1:
-		return "", fmt.Errorf("llm: %s: response contained %d %q blocks named %q, want exactly one", Anthropic, found, anthropicToolUse, name)
+		return "", fmt.Errorf("llm: %s: response contained %d %q blocks, want exactly one", Anthropic, found, anthropicToolUse)
+	case called != name:
+		return "", fmt.Errorf("llm: %s: response called tool %q, want %q", Anthropic, called, name)
 	}
 	if _, ok := decodeJSONObject(input); !ok {
 		return "", fmt.Errorf("llm: %s: structured response was not a JSON object", Anthropic)
