@@ -95,6 +95,14 @@ var schemaNameRE = regexp.MustCompile(schemaNamePattern)
 // different slice of it, so anything not named here is something nobody has
 // checked. A loud rejection beats a keyword one provider honors and another
 // ignores.
+//
+// Adding a keyword here means writing the code that reads its value, so know
+// this before you do: json.Unmarshal does not fail on a JSON null. It leaves
+// the destination at its zero value and returns nil, so any check that leans on
+// the unmarshal error to reject a wrong-typed value accepts null silently -
+// which is how a `"additionalProperties": null` once read as false. Decode a
+// string through jsonString and anything else through an explicit isJSONNull
+// check; don't hand a raw value straight to json.Unmarshal.
 var schemaKeywords = map[string][]string{
 	"object":  {"properties", "required", "additionalProperties"},
 	"array":   {"items"},
