@@ -44,6 +44,14 @@ import (
 // carrying one would mean three different things. Nullable fields and union
 // types are documented on all three but left out because nothing needs them
 // yet; both are additive later.
+//
+// One trap worth knowing about "enum": it constrains the provider, not you. A
+// conforming model picks a value off the list, so a variant your own parser
+// doesn't recognise still arrives as valid JSON of the declared type and passes
+// every check here - and then whatever tolerant unmarshalling you have drops it
+// with no error anywhere. A one-character disagreement between the enum and the
+// parser silently loses the field. Worth a test that feeds every variant an
+// enum offers through the real parser.
 type Schema struct {
 	// Name identifies the schema to the provider. Required, and it must match
 	// schemaNamePattern - Anthropic documents that regex for a tool name and
