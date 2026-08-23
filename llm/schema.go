@@ -54,7 +54,9 @@ import (
 // produce, so that case silently never happens again. enum is the one part of
 // the subset a caller can hold wrong, and it is wrong invisibly in both
 // directions - so derive it from the parser's own set of values rather than
-// writing the list out twice.
+// writing the list out twice. If the two lists have to stay separate, assert
+// they are equal: a test that only checks every enum value survives the parser
+// passes while the other direction is broken.
 //
 // What is deliberately not checked here: anything a provider would reject
 // loudly. The test for whether a rule belongs in this validator is whether

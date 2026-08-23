@@ -663,17 +663,17 @@ against the limit of 10, and 4 properties against 5,000.
 
 Three more things:
 
-- **An `enum` value your own parser rejects is a silent drop, not an error.**
-  The schema constrains the provider, not you. A conforming model picks a value
-  off your list, so a variant your parser doesn't recognise still arrives as
-  valid JSON of the declared type and passes every check here - and then a
-  tolerant `UnmarshalJSON` discards it with nothing logged. The reverse is just
-  as quiet: a value your parser accepts but the enum doesn't offer becomes
-  impossible for the model to produce, so that case simply never happens again.
-  `enum` is the one part of the subset the caller can hold wrong, and it's wrong
-  invisibly in both directions. The fix for both is to stop them being two
-  lists - derive the enum from the parser's own set rather than writing it out
-  twice.
+- **An `enum` that disagrees with your parser fails silently, in both
+  directions.** The schema constrains the provider, not you. A conforming model
+  picks a value off your list, so a variant your parser doesn't recognise still
+  arrives as valid JSON of the declared type and passes every check here - and
+  then a tolerant `UnmarshalJSON` discards it with nothing logged. The reverse
+  is just as quiet: a value your parser accepts but the enum doesn't offer
+  becomes impossible for the model to produce, so that case simply never happens
+  again. The fix for both is to stop them being two lists - derive the enum from
+  the parser's own set. If you can't, assert the two are *equal*: a test that
+  only checks every enum value survives the parser passes happily while the
+  other direction is broken.
 - **`Stream` rejects a `Schema`.** Anthropic delivers a constrained answer as
   tool input, which arrives as `input_json_delta` rather than `text_delta`, so a
   stream would call your callback zero times. Use `Complete`.
