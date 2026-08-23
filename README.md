@@ -648,15 +648,32 @@ decoding with them - so the same request would behave three ways. Nullable
 fields and union types are documented on all three but left out until something
 needs them.
 
+**The rule for what belongs in that list: does getting it wrong fail silently?**
+Semantic divergence does - a bounds keyword enforced by two providers and
+ignored by the third produces a plausible wrong answer with no error, which is
+the only thing worth spending a local check on. Provider *quotas* don't:
+OpenAI's schema-size limits (10 nesting levels, 5,000 properties, and so on)
+produce a 400 that names the real limit and comes back with the model attached.
+Pre-empting that locally would trade a loud, accurate failure for a guess -
+and since this validator is unexported and runs inside `Complete`, a caller
+holding a schema the provider would accept would have no way past it short of a
+module release. The stricter party can only be wrong in the direction that
+blocks working code. For scale: the app this was built for runs 5 nesting levels
+against the limit of 10, and 4 properties against 5,000.
+
 Three more things:
 
 - **An `enum` value your own parser rejects is a silent drop, not an error.**
   The schema constrains the provider, not you. A conforming model picks a value
   off your list, so a variant your parser doesn't recognise still arrives as
   valid JSON of the declared type and passes every check here - and then a
-  tolerant `UnmarshalJSON` discards it with nothing logged. A one-character
-  disagreement between the enum and the parser loses the field outright. Worth a
-  test that feeds every variant an enum offers through the real parser.
+  tolerant `UnmarshalJSON` discards it with nothing logged. The reverse is just
+  as quiet: a value your parser accepts but the enum doesn't offer becomes
+  impossible for the model to produce, so that case simply never happens again.
+  `enum` is the one part of the subset the caller can hold wrong, and it's wrong
+  invisibly in both directions. The fix for both is to stop them being two
+  lists - derive the enum from the parser's own set rather than writing it out
+  twice.
 - **`Stream` rejects a `Schema`.** Anthropic delivers a constrained answer as
   tool input, which arrives as `input_json_delta` rather than `text_delta`, so a
   stream would call your callback zero times. Use `Complete`.

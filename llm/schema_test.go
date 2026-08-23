@@ -427,7 +427,10 @@ func TestSchemaValidationRejectsWhatTheProvidersDisagreeAbout(t *testing.T) {
 		// optional field is checked by hand. Without that, these read as a valid
 		// enum variant, as additionalProperties: false, as a description, and as
 		// a property named "".
-		"null enum variant":         {fmt.Sprintf(obj, `{"type":"string","enum":["a",null]}`), "not string"},
+		"null enum variant": {fmt.Sprintf(obj, `{"type":"string","enum":["a",null]}`), "not string"},
+		// An enum element isn't a string-valued keyword, so it's the one place
+		// the null check has to be per-type rather than shared. Both types.
+		"null integer enum variant": {fmt.Sprintf(obj, `{"type":"integer","enum":[1,null]}`), "not integer"},
 		"null additionalProperties": {`{"type":"object","additionalProperties":null,"required":["a"],"properties":{"a":{"type":"string"}}}`, "must set"},
 		"null enum":                 {fmt.Sprintf(obj, `{"type":"string","enum":null}`), `not an array`},
 		"null description":          {fmt.Sprintf(obj, `{"type":"string","description":null}`), `non-string "description"`},
