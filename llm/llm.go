@@ -45,12 +45,23 @@
 // with user, and no message may be empty. See validate for why each rule earns
 // its place.
 //
-// Deliberately not here: tool calling, embeddings, retries, and token/cost
-// accounting. Each is additive later; none has a caller today. A non-2xx
-// response - a 429 or a 529, say - surfaces as an *Error with Status set, which
-// is the seam an app uses if it ever wants to retry. A provider failure
-// reported mid-stream, after the 200 headers are already out, can't be one; it
-// comes back as a plain error.
+// Setting Request.Schema constrains the reply to a JSON object matching a JSON
+// Schema, which Response.Text then holds as a string. See Schema for the
+// portable subset and for the measurement that justifies the mechanism.
+//
+// Deliberately not here: embeddings, retries, and token/cost accounting. Each
+// is additive later; none has a caller today. A non-2xx response - a 429 or a
+// 529, say - surfaces as an *Error with Status set, which is the seam an app
+// uses if it ever wants to retry. A provider failure reported mid-stream, after
+// the 200 headers are already out, can't be one; it comes back as a plain
+// error.
+//
+// General tool calling isn't here either, and isn't planned. Anthropic's
+// transport does use a forced tool call to implement Schema, but that is a
+// transport detail with no exported surface: Anthropic's own
+// output_config.format still truncated 23 times in 366 calls, degenerating into
+// a run of closing braces until it hit max_tokens, while forced tool use failed
+// 0 times in 174.
 package llm
 
 import (
@@ -128,6 +139,18 @@ type Request struct {
 	// the tighter of the two keeps the cross-provider promise the rest of
 	// validate makes, and above 1 is noise-generation territory anyway.
 	Temperature *float64
+	// Schema constrains the reply to a JSON object matching a JSON Schema.
+	// Optional: nil is free-form text and sends exactly the request this
+	// package sent before schemas existed.
+	//
+	// When it is set, Response.Text holds the JSON object as a string - there
+	// is no second field to read, so a fake completer that returns canned JSON
+	// as Text, or a decorator that logs Text, keeps working unchanged.
+	//
+	// Not supported by Stream, which rejects it: Anthropic delivers a
+	// constrained response as tool input rather than text, so onText would be
+	// handed nothing at all.
+	Schema *Schema
 }
 
 // Temp returns a pointer to v, for setting Request.Temperature inline:
@@ -150,6 +173,11 @@ type Response struct {
 	// returning no usable text is an error, not an empty completion. A refusal
 	// is also an error, but a distinct one that names the refusal, so a caller
 	// can tell a declined request from a broken response.
+	//
+	// When Request.Schema was set this is the JSON object, as a string, ready
+	// for json.Unmarshal. A response the provider didn't finish is an error
+	// rather than partial text, because a truncated instance of a schema is
+	// invalid JSON by construction.
 	Text string
 }
 
@@ -345,11 +373,23 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 // response headers - the default is two minutes (see defaultTimeout). An app
 // expecting longer generations should inject a client with a longer or zero
 // Timeout via WithHTTPClient and bound the call with ctx instead.
+//
+// Request.Schema is rejected here. Anthropic delivers a schema-constrained
+// answer as tool input, which arrives as input_json_delta rather than
+// text_delta, so a stream that accepted a Schema would call onText zero times
+// and hand back an empty Response - the silent failure this whole mechanism
+// exists to remove. Use Complete.
 func (c *Client) Stream(ctx context.Context, req Request, onText func(text string) error) (Response, error) {
 	if onText == nil {
 		// Checked before validate so the message names the actual mistake
 		// rather than whatever else might also be wrong.
 		return Response{}, fmt.Errorf("llm: Stream requires a non-nil onText callback")
+	}
+	// Checked here rather than in validate because validate is shared with
+	// Complete, where a Schema is the entire point, and it can't tell which
+	// one called it.
+	if req.Schema != nil {
+		return Response{}, fmt.Errorf("llm: Stream does not support Request.Schema; use Complete")
 	}
 	p, model, err := c.resolve(req)
 	if err != nil {
@@ -423,6 +463,11 @@ func validate(req Request) error {
 	if t := req.Temperature; t != nil {
 		if math.IsNaN(*t) || *t < 0 || *t > 1 {
 			return fmt.Errorf("llm: Temperature must be between 0 and 1 (got %v)", *t)
+		}
+	}
+	if req.Schema != nil {
+		if err := validateSchema(req.Schema); err != nil {
+			return err
 		}
 	}
 

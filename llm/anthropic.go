@@ -15,6 +15,12 @@ const (
 	anthropicVersion = "2023-06-01"
 	// anthropicRefusal is the stop_reason for a request the model declined.
 	anthropicRefusal = "refusal"
+	// anthropicToolUse is the stop_reason for a turn that ended in a tool
+	// call, and the only one a schema-constrained response may carry. The
+	// others - end_turn, max_tokens, stop_sequence, pause_turn,
+	// model_context_window_exceeded - all mean the model stopped somewhere
+	// other than the end of the tool input.
+	anthropicToolUse = "tool_use"
 )
 
 // anthropicProvider speaks Anthropic's Messages API, which differs from the
@@ -51,6 +57,40 @@ type anthropicRequest struct {
 	// Stream is omitted on the blocking path, so that request body is
 	// byte-for-byte what it was before streaming existed.
 	Stream bool `json:"stream,omitempty"`
+	// Tools and ToolChoice carry a Request.Schema, and are omitted otherwise so
+	// an unconstrained request is byte-for-byte what it was before schemas
+	// existed.
+	Tools      []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
+}
+
+// anthropicTool is one tool definition. This is the only tool this package ever
+// sends, and it is not a tool in the useful sense - it's a shape the model must
+// fill in, used purely to get a constrained JSON object back.
+//
+// Why this rather than Anthropic's own output_config.format, which is the
+// obvious fit: measured against claude-sonnet-5 on a real prompt, the native
+// format truncated 23 times in 366 calls - it would degenerate into a run of
+// closing braces and burn to max_tokens - while forced tool use failed 0 times
+// in 174.
+type anthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema"`
+	// Strict asks Anthropic to guarantee schema validation of the tool input.
+	// Unlike OpenAI's flag of the same name it imposes no extra schema
+	// requirements of its own.
+	Strict bool `json:"strict"`
+}
+
+// anthropicToolChoice forces the model to answer by calling one named tool.
+type anthropicToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+	// DisableParallelToolUse makes Anthropic emit exactly one tool call.
+	// complete still checks that, because a promise about the response is not
+	// the same thing as having verified the response.
+	DisableParallelToolUse bool `json:"disable_parallel_tool_use"`
 }
 
 type anthropicResponse struct {
@@ -58,6 +98,11 @@ type anthropicResponse struct {
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
+		// Name and Input are populated on a tool_use block. Input is kept raw
+		// so a schema-constrained response is handed back exactly as the
+		// provider wrote it rather than round-tripped through a Go map.
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
 	} `json:"content"`
 	// StopReason is "refusal" when the model declines. Same distinction as the
 	// OpenAI transport's refusal field: a declined request is a different
@@ -109,6 +154,20 @@ func (p *anthropicProvider) requestBody(req Request, model string) anthropicRequ
 		}
 		body.Messages = append(body.Messages, anthropicMessage{Role: string(m.Role), Content: m.Content})
 	}
+
+	if s := req.Schema; s != nil {
+		body.Tools = []anthropicTool{{
+			Name:        s.Name,
+			Description: s.Description,
+			InputSchema: s.JSON,
+			Strict:      true,
+		}}
+		body.ToolChoice = &anthropicToolChoice{
+			Type:                   "tool",
+			Name:                   s.Name,
+			DisableParallelToolUse: true,
+		}
+	}
 	return body
 }
 
@@ -116,7 +175,7 @@ func (p *anthropicProvider) complete(ctx context.Context, req Request, model str
 	var out anthropicResponse
 	err := doJSON(ctx, p.http, Anthropic, p.url(), p.apiKey, p.setAuth, p.requestBody(req, model), &out)
 	if err != nil {
-		return Response{}, err
+		return Response{}, schemaRequestError(Anthropic, model, req.Schema, err)
 	}
 
 	// A refusal is a real answer from the model, just not a usable completion.
@@ -125,6 +184,19 @@ func (p *anthropicProvider) complete(ctx context.Context, req Request, model str
 	// completion would hand the caller content the provider declined to give.
 	if out.StopReason == anthropicRefusal {
 		return Response{}, fmt.Errorf("llm: %s: model refused the request", Anthropic)
+	}
+
+	respModel := out.Model
+	if respModel == "" {
+		respModel = model
+	}
+
+	if req.Schema != nil {
+		text, err := anthropicToolInput(req.Schema.Name, out)
+		if err != nil {
+			return Response{}, err
+		}
+		return Response{Provider: Anthropic, Model: respModel, Text: text}, nil
 	}
 
 	// content is an array of typed blocks and the first one is not guaranteed
@@ -141,15 +213,52 @@ func (p *anthropicProvider) complete(ctx context.Context, req Request, model str
 		return Response{}, fmt.Errorf("llm: %s: response contained no text blocks", Anthropic)
 	}
 
-	respModel := out.Model
-	if respModel == "" {
-		respModel = model
-	}
 	return Response{
 		Provider: Anthropic,
 		Model:    respModel,
 		Text:     text.String(),
 	}, nil
+}
+
+// anthropicToolInput pulls the constrained JSON object out of a forced tool
+// call.
+//
+// Every check here fails closed, because the failure this whole path exists to
+// remove is a half-written JSON object accepted as a successful answer:
+//
+//   - Any stop_reason other than tool_use means the model stopped somewhere
+//     other than the end of the tool input, so whatever it wrote is truncated
+//     and truncated JSON is invalid JSON. The reason is named rather than
+//     matched against a list of known-bad ones, so a stop_reason Anthropic adds
+//     later is loud instead of silently accepted.
+//   - Zero matching blocks means the model answered with prose instead of
+//     calling the tool. tool_choice should prevent that; if it doesn't, an
+//     error beats a Response holding nothing.
+//   - More than one means picking the first would silently discard the rest.
+//     disable_parallel_tool_use is meant to prevent this too.
+func anthropicToolInput(name string, out anthropicResponse) (string, error) {
+	if out.StopReason != anthropicToolUse {
+		return "", fmt.Errorf("llm: %s: structured response did not complete: stop_reason %q, want %q", Anthropic, out.StopReason, anthropicToolUse)
+	}
+
+	var input json.RawMessage
+	found := 0
+	for _, block := range out.Content {
+		if block.Type == anthropicToolUse && block.Name == name {
+			found++
+			input = block.Input
+		}
+	}
+	switch {
+	case found == 0:
+		return "", fmt.Errorf("llm: %s: response contained no %q block named %q", Anthropic, anthropicToolUse, name)
+	case found > 1:
+		return "", fmt.Errorf("llm: %s: response contained %d %q blocks named %q, want exactly one", Anthropic, found, anthropicToolUse, name)
+	}
+	if _, ok := decodeJSONObject(input); !ok {
+		return "", fmt.Errorf("llm: %s: structured response was not a JSON object", Anthropic)
+	}
+	return string(input), nil
 }
 
 func (p *anthropicProvider) stream(ctx context.Context, req Request, model string, onText func(string) error) (Response, error) {

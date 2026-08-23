@@ -116,7 +116,8 @@ go-home-server/
   switch providers with a field on the request instead of three sets of HTTP
   plumbing. `llm.New(llm.ConfigFromEnv())`, then
   `client.Complete(ctx, llm.Request{...})`, or `client.Stream(...)` to relay
-  text as it's generated. It owns transport only - prompts stay in the app. See
+  text as it's generated. Set `Request.Schema` to get a JSON object back instead
+  of prose. It owns transport only - prompts stay in the app. See
   [Calling an LLM](#calling-an-llm).
 - **MCP server** - a `mcp` harness so every app can expose its data to Claude
   (or any MCP client) the same way. It wraps the official Go MCP SDK: an app
@@ -583,10 +584,86 @@ A few things that surprise people, all deliberate:
   reports it as `stop_reason: "refusal"`, OpenAI and xAI as a `refusal` field or
   `finish_reason: "content_filter"`. All of them come back as an error so an app
   can't mistake a refusal for a successful empty answer. Hitting `MaxTokens` is
-  not an error - that limit is yours, and the partial text is usable.
+  not an error - that limit is yours, and the partial text is usable. (With a
+  `Schema` set it *is* an error; see [Structured
+  output](#structured-output).)
 
 All of that is checked before any HTTP happens, so a malformed request fails the
 same way no matter which provider would have answered it.
+
+### Structured output
+
+Set `Request.Schema` and the reply is constrained to a JSON object matching a
+JSON Schema. `resp.Text` holds that object as a string:
+
+```go
+resp, err := client.Complete(ctx, llm.Request{
+    Messages:  msgs,
+    MaxTokens: 1024,
+    Schema: &llm.Schema{
+        Name:        "journal_synopsis",
+        Description: "a synopsis of one entry",
+        JSON:        json.RawMessage(`{
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["summary", "mood"],
+            "properties": {
+                "summary": {"type": "string", "description": "one sentence"},
+                "mood":    {"type": "string", "enum": ["good", "bad"]}
+            }
+        }`),
+    },
+})
+
+var out synopsis
+err = json.Unmarshal([]byte(resp.Text), &out)
+```
+
+It stays in `resp.Text` rather than getting a field of its own so a fake
+completer that returns canned JSON, or a decorator that logs the reply, keeps
+working unchanged.
+
+This is worth using because asking for JSON in the prompt and parsing what comes
+back fails often enough to matter. Replaying one real prompt against
+`claude-sonnet-5`, ~8% of unconstrained responses were malformed - the model
+stopped mid-string with an ordinary `stop_reason`. The constrained path failed
+0 times in 174.
+
+**The schema has to use a narrow subset**, enforced locally before any HTTP, for
+the same reason `MaxTokens` is required: the providers each support a different
+slice of JSON Schema, so anything wider would mean three different things.
+
+- The root must be an object.
+- Types: `object`, `array`, `string`, `integer`, `number`, `boolean`.
+- Every node may carry `description`. Nothing else beyond the keywords below.
+- `object` needs `properties`, `required` listing every property exactly once,
+  and `additionalProperties: false`.
+- `array` needs `items`.
+- `string` and `integer` may carry a non-empty `enum`.
+
+Notably absent: length and numeric bounds (`minLength`, `maxItems`,
+`minimum`...). OpenAI enforces them, xAI enforces them up to documented limits,
+and Anthropic's tool `input_schema` accepts them and just doesn't constrain
+decoding with them - so the same request would behave three ways. Nullable
+fields and union types are documented on all three but left out until something
+needs them.
+
+Two more things:
+
+- **`Stream` rejects a `Schema`.** Anthropic delivers a constrained answer as
+  tool input, which arrives as `input_json_delta` rather than `text_delta`, so a
+  stream would call your callback zero times. Use `Complete`.
+- **A response the provider didn't finish is an error, not partial text.** This
+  is the one place `MaxTokens` truncation *is* an error: a half-written instance
+  of a schema is invalid JSON by construction, so handing it back as success is
+  the exact silent corruption the schema was meant to remove. Only Anthropic's
+  `stop_reason: "tool_use"` and OpenAI/xAI's `finish_reason: "stop"` are
+  accepted; every other reason, including one a provider adds later, is an
+  error. There's no retry and no JSON repair.
+
+There's no fallback either. If the model can't do this, the provider's 400 comes
+back with the model named and the provider's own reason attached - not a quiet
+free-form completion an app would parse as JSON and fail on.
 
 ### Streaming
 
@@ -638,10 +715,10 @@ Two things worth knowing:
 A stream that ends without its provider's terminator is an error too, so a proxy
 reset mid-answer can't quietly look like a complete one.
 
-Not included: tool calling, embeddings, retries, and token/cost accounting. None
-has a caller yet and each is additive later. A non-2xx response - a rate limit
-or an overload, say - comes back as an `*llm.Error` with `Status` set, which is
-the seam if an app ever wants to retry:
+Not included: embeddings, retries, and token/cost accounting. None has a caller
+yet and each is additive later. A non-2xx response - a rate limit or an
+overload, say - comes back as an `*llm.Error` with `Status` set, which is the
+seam if an app ever wants to retry:
 
 ```go
 var apiErr *llm.Error

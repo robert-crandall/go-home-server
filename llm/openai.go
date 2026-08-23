@@ -25,6 +25,11 @@ const openAIDone = "[DONE]"
 // withheld. It's a declined request like a refusal, not a broken response.
 const finishContentFilter = "content_filter"
 
+// finishStop is the finish_reason for a completion the model finished on its
+// own, and the only one a schema-constrained response may carry. "length" means
+// truncation, and a truncated instance of a schema is invalid JSON.
+const finishStop = "stop"
+
 // openAICompatible speaks the OpenAI Chat Completions wire format, which xAI
 // implements too - so one transport serves both providers.
 //
@@ -69,6 +74,32 @@ type openAIRequest struct {
 	// Stream is omitted on the blocking path, so that request body is
 	// byte-for-byte what it was before streaming existed.
 	Stream bool `json:"stream,omitempty"`
+	// ResponseFormat carries a Request.Schema, and is omitted otherwise so an
+	// unconstrained request is byte-for-byte what it was before schemas
+	// existed.
+	ResponseFormat *openAIResponseFormat `json:"response_format,omitempty"`
+}
+
+// openAIResponseFormat asks for a schema-constrained reply. Both providers
+// document this shape; xAI implements OpenAI's, as it does for the rest of this
+// transport.
+type openAIResponseFormat struct {
+	Type       string           `json:"type"`
+	JSONSchema openAIJSONSchema `json:"json_schema"`
+}
+
+type openAIJSONSchema struct {
+	Name string `json:"name"`
+	// Description is documented as steering the model toward the right shape.
+	// It's sent for the same reason Anthropic's tool gets one: Schema is one
+	// exported field, so it can't mean something different per provider.
+	Description string `json:"description,omitempty"`
+	// Strict turns on constrained decoding. It's what makes the "required
+	// lists every property" and "additionalProperties: false" rules in
+	// validateSchema load-bearing rather than stylistic - without it the schema
+	// is a suggestion.
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 type openAIResponse struct {
@@ -124,6 +155,22 @@ func (p *openAICompatible) requestBody(req Request, model string) openAIRequest 
 		Messages:            msgs,
 		MaxCompletionTokens: req.MaxTokens,
 		Temperature:         req.Temperature,
+		ResponseFormat:      openAIResponseFormatFor(req.Schema),
+	}
+}
+
+func openAIResponseFormatFor(s *Schema) *openAIResponseFormat {
+	if s == nil {
+		return nil
+	}
+	return &openAIResponseFormat{
+		Type: "json_schema",
+		JSONSchema: openAIJSONSchema{
+			Name:        s.Name,
+			Description: s.Description,
+			Strict:      true,
+			Schema:      s.JSON,
+		},
 	}
 }
 
@@ -131,7 +178,7 @@ func (p *openAICompatible) complete(ctx context.Context, req Request, model stri
 	var out openAIResponse
 	err := doJSON(ctx, p.http, p.id, p.url(), p.apiKey, p.setAuth, p.requestBody(req, model), &out)
 	if err != nil {
-		return Response{}, err
+		return Response{}, schemaRequestError(p.id, model, req.Schema, err)
 	}
 
 	if len(out.Choices) == 0 {
@@ -153,8 +200,21 @@ func (p *openAICompatible) complete(ctx context.Context, req Request, model stri
 	if choice.FinishReason == finishContentFilter {
 		return Response{}, fmt.Errorf("llm: %s: response was withheld by the provider's content filter", p.id)
 	}
+	// A schema-constrained answer is only usable if the model ran to its own
+	// stopping point. Anything else - "length", "tool_calls", or a reason
+	// added after this was written - means it stopped mid-object, and the
+	// caller would get invalid JSON reported as success. Named rather than
+	// matched against a list of known-bad reasons so an unfamiliar one is loud.
+	if req.Schema != nil && choice.FinishReason != finishStop {
+		return Response{}, fmt.Errorf("llm: %s: structured response did not complete: finish_reason %q, want %q", p.id, choice.FinishReason, finishStop)
+	}
 	if choice.Message.Content == "" {
 		return Response{}, fmt.Errorf("llm: %s: response contained no text", p.id)
+	}
+	if req.Schema != nil {
+		if _, ok := decodeJSONObject(json.RawMessage(choice.Message.Content)); !ok {
+			return Response{}, fmt.Errorf("llm: %s: structured response was not a JSON object", p.id)
+		}
 	}
 
 	respModel := out.Model

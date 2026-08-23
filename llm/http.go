@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,33 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("llm: %s: unexpected status %d", e.Provider, e.Status)
 	}
 	return fmt.Sprintf("llm: %s: unexpected status %d: %s", e.Provider, e.Status, e.Body)
+}
+
+// schemaRequestError names the model in a provider's rejection of a
+// schema-constrained request.
+//
+// A 400 or 422 on this path has two plausible causes - the selected model
+// doesn't support structured output, or the provider won't accept this
+// particular schema - and the response body is the only thing that can tell
+// them apart. So this deliberately claims neither. It adds the one piece of
+// context the provider's own message can't have (which model was selected,
+// since Request.Model is often empty and resolved from config) and wraps the
+// *Error rather than replacing it, so errors.As still reaches Status.
+//
+// Silently retrying without the schema would be the alternative, and it's the
+// wrong one: an app that asked for JSON and got prose has no way to notice.
+func schemaRequestError(id ProviderID, model string, schema *Schema, err error) error {
+	if schema == nil {
+		return err
+	}
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	if apiErr.Status != http.StatusBadRequest && apiErr.Status != http.StatusUnprocessableEntity {
+		return err
+	}
+	return fmt.Errorf("llm: %s: model %q rejected the request for schema %q: %w", id, model, schema.Name, err)
 }
 
 // postJSON performs one JSON POST and hands back the response on a 2xx.
