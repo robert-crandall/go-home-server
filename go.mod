@@ -1,6 +1,6 @@
 module github.com/robert-crandall/go-home-server
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
@@ -9,8 +9,8 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/pressly/goose/v3 v3.27.3
-	golang.org/x/crypto v0.55.0
+	github.com/pressly/goose/v3 v3.28.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.45.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/term v0.45.0
