@@ -15,6 +15,9 @@
 //	})
 //
 // Then anywhere in the app: nsvc.Send(ctx, userID, notify.Payload{...}).
+//
+// To isolate outbound HTTP without replacing the database or Web Push
+// encryption, use NewServiceWithOptions(pool, vapid, WithHTTPClient(client)).
 package notify
 
 import (
@@ -56,8 +59,26 @@ type VAPID struct {
 
 // Service sends web push notifications and manages subscriptions.
 type Service struct {
-	db    *pgxpool.Pool
-	vapid VAPID
+	db         *pgxpool.Pool
+	vapid      VAPID
+	httpClient *http.Client
+}
+
+// Option customizes a Service.
+type Option func(*serviceOptions)
+
+type serviceOptions struct {
+	http *http.Client
+}
+
+// WithHTTPClient uses h for this service's outbound Web Push requests.
+// A nil client is ignored. Without a client, webpush-go uses its default.
+func WithHTTPClient(h *http.Client) Option {
+	return func(o *serviceOptions) {
+		if h != nil {
+			o.http = h
+		}
+	}
 }
 
 // NewService constructs a notify service. When VAPID keys are provided it
@@ -66,6 +87,12 @@ type Service struct {
 // fails loudly at startup instead of turning into an iOS-only 403 at send time.
 // Empty keys mean push is disabled, which is not an error.
 func NewService(db *pgxpool.Pool, v VAPID) (*Service, error) {
+	return NewServiceWithOptions(db, v)
+}
+
+// NewServiceWithOptions constructs a service with the same VAPID validation
+// and defaults as NewService, plus optional per-service configuration.
+func NewServiceWithOptions(db *pgxpool.Pool, v VAPID, opts ...Option) (*Service, error) {
 	if v.Public != "" || v.Private != "" {
 		if err := validateVAPIDKeys(v.Public, v.Private); err != nil {
 			return nil, err
@@ -74,7 +101,11 @@ func NewService(db *pgxpool.Pool, v VAPID) (*Service, error) {
 			return nil, err
 		}
 	}
-	return &Service{db: db, vapid: v}, nil
+	o := serviceOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return &Service{db: db, vapid: v, httpClient: o.http}, nil
 }
 
 // Enabled reports whether VAPID keys are configured.
@@ -251,7 +282,7 @@ func endpointHost(raw string) string {
 // sendOne delivers to a single subscription. gone is true when the push service
 // reports the subscription no longer exists (404/410), so the caller prunes it.
 func (s *Service) sendOne(ctx context.Context, body []byte, sub webpush.Subscription) (gone bool, err error) {
-	resp, err := webpush.SendNotificationWithContext(ctx, body, &sub, &webpush.Options{
+	opts := &webpush.Options{
 		// librarySubscriber strips our "mailto:" prefix so webpush-go re-adds
 		// exactly one: passing the subject directly yields an invalid
 		// "mailto:mailto:..." JWT sub that Apple rejects with 403 BadJwtToken
@@ -264,7 +295,12 @@ func (s *Service) sendOne(ctx context.Context, body []byte, sub webpush.Subscrip
 		// device promptly rather than batch the message. Delivery timing, not
 		// user-facing escalation.
 		Urgency: webpush.UrgencyHigh,
-	})
+	}
+	// A typed-nil client would bypass webpush-go's interface nil fallback.
+	if s.httpClient != nil {
+		opts.HTTPClient = s.httpClient
+	}
+	resp, err := webpush.SendNotificationWithContext(ctx, body, &sub, opts)
 	if err != nil {
 		return false, fmt.Errorf("notify: send: %w", err)
 	}

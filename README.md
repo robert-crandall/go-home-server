@@ -150,6 +150,18 @@ Web push needs a VAPID key pair:
 go run github.com/robert-crandall/go-home-server/cmd/vapid@latest
 ```
 
+`notify.NewService(pool, vapid)` keeps the default Web Push transport. To use
+an isolated `*http.Client` (for example, with a test transport), opt in per service:
+
+```go
+nsvc, err := notify.NewServiceWithOptions(pool, vapid, notify.WithHTTPClient(client))
+```
+
+A nil client is ignored. Subscription validation still requires public HTTPS
+endpoints, and the service still uses real storage, encryption, and VAPID signing.
+Tests can use `https://push.example.invalid/...` with an injected transport;
+there is no need to replace `http.DefaultTransport` or contact a push provider.
+
 ### Configuration
 
 `config.Load` reads these from the environment (and an optional `.env` in the
