@@ -5,14 +5,118 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// Keep function-value compatibility, not just two-argument call compatibility.
+var _ func(*pgxpool.Pool, VAPID) (*Service, error) = NewService
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func testContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func testVAPID(t *testing.T) VAPID {
+	t.Helper()
+	pub, priv, err := GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatalf("generate VAPID: %v", err)
+	}
+	return VAPID{Public: pub, Private: priv, Subject: "mailto:test@example.invalid"}
+}
+
+func TestNewServiceHTTPClientDefaults(t *testing.T) {
+	v := testVAPID(t)
+	var sub webpush.Subscription
+	sub.Endpoint = "https://push.example.invalid/defaults"
+	sub.Keys.P256dh, sub.Keys.Auth = testSubscriptionKeys(t)
+	var hits int
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		hits++
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})}
+	defaultClient, defaultTransport := http.DefaultClient, http.DefaultTransport
+	custom, err := NewServiceWithOptions(nil, v, WithHTTPClient(client), WithHTTPClient(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if custom.httpClient != client {
+		t.Fatal("nil option must not replace a configured client")
+	}
+	if _, err := custom.sendOne(testContext(t), []byte(`{"title":"custom"}`), sub); err != nil {
+		t.Fatalf("custom send: %v", err)
+	}
+
+	var nilClient *http.Client
+	for name, newService := range map[string]func(*pgxpool.Pool, VAPID) (*Service, error){
+		"original": NewService,
+		"no options": func(db *pgxpool.Pool, v VAPID) (*Service, error) {
+			return NewServiceWithOptions(db, v)
+		},
+		"nil": func(db *pgxpool.Pool, v VAPID) (*Service, error) {
+			return NewServiceWithOptions(db, v, WithHTTPClient(nil))
+		},
+		"typed nil": func(db *pgxpool.Pool, v VAPID) (*Service, error) {
+			return NewServiceWithOptions(db, v, WithHTTPClient(nilClient))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, err := newService(nil, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if svc.httpClient != nil || !svc.Enabled() || svc.PublicKey() != v.Public {
+				t.Fatal("constructor changed default client or VAPID configuration")
+			}
+			// Exercise webpush-go's fallback without allowing a network request.
+			ctx, cancel := context.WithCancel(testContext(t))
+			cancel()
+			if _, err := svc.sendOne(ctx, []byte(`{"title":"default"}`), sub); !errors.Is(err, context.Canceled) {
+				t.Fatalf("default send = %v, want context.Canceled", err)
+			}
+			if _, err := newService(nil, VAPID{Public: v.Public}); err == nil {
+				t.Fatal("constructor must reject incomplete VAPID keys")
+			}
+			badSubject := v
+			badSubject.Subject = "test@example.invalid"
+			if _, err := newService(nil, badSubject); err == nil {
+				t.Fatal("constructor must reject an invalid VAPID subject")
+			}
+			disabled, err := newService(nil, VAPID{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if disabled.Enabled() {
+				t.Fatal("empty VAPID must disable push")
+			}
+			if err := disabled.Send(testContext(t), 1, Payload{}); err == nil || !strings.Contains(err.Error(), "VAPID keys not configured") {
+				t.Fatalf("disabled Send = %v", err)
+			}
+		})
+	}
+	if hits != 1 {
+		t.Fatalf("custom transport got %d calls, want 1; default services must not use it", hits)
+	}
+	if http.DefaultClient != defaultClient || http.DefaultTransport != defaultTransport {
+		t.Fatal("per-service options must not replace HTTP globals")
+	}
+}
 
 func TestValidateVAPIDKeys(t *testing.T) {
 	pub, priv, err := GenerateVAPIDKeys()
