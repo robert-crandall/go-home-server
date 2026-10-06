@@ -67,14 +67,16 @@ import (
 // and because this runs inside Complete with no way to opt out, a wrong guess
 // blocks a schema the provider would have accepted.
 type Schema struct {
-	// Name identifies the schema to the provider. Required, and it must match
+	// Name identifies the schema in errors and, except for native Anthropic
+	// JSON output, to the provider. Required, and it must match
 	// schemaNamePattern - Anthropic documents that regex for a tool name and
 	// OpenAI documents the same character set and 64-byte cap for a
 	// response-format name, so one rule satisfies both.
 	Name string
 	// Description tells the model what the schema is for. Optional, and passed
 	// through to every provider so the field doesn't mean something different
-	// depending on who answers.
+	// depending on who answers. Native Anthropic JSON output prepends it to
+	// the root schema's description without changing JSON.
 	Description string
 	// JSON is the JSON Schema itself, as a raw JSON object.
 	JSON json.RawMessage
