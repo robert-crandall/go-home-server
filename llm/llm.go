@@ -57,11 +57,12 @@
 // error.
 //
 // General tool calling isn't here either, and isn't planned. Anthropic's
-// transport does use a forced tool call to implement Schema, but that is a
+// transport uses a forced tool call to implement Schema on older models, but that is a
 // transport detail with no exported surface: Anthropic's own
-// output_config.format still truncated 23 times in 366 calls, degenerating into
-// a run of closing braces until it hit max_tokens, while forced tool use failed
-// 0 times in 174.
+// output_config.format truncated 23 times in 366 calls on claude-sonnet-5,
+// degenerating into a run of closing braces until it hit max_tokens, while
+// forced tool use failed 0 times in 174. claude-sonnet-5-5 rejects forced tool
+// use, so that model uses native JSON output instead.
 package llm
 
 import (
@@ -147,9 +148,9 @@ type Request struct {
 	// is no second field to read, so a fake completer that returns canned JSON
 	// as Text, or a decorator that logs Text, keeps working unchanged.
 	//
-	// Not supported by Stream, which rejects it: Anthropic delivers a
-	// constrained response as tool input rather than text, so onText would be
-	// handed nothing at all.
+	// Not supported by Stream, which rejects it on every model: older
+	// Anthropic models deliver constrained responses as tool input rather than
+	// text, so onText would be handed nothing at all.
 	Schema *Schema
 }
 

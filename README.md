@@ -641,6 +641,15 @@ back fails often enough to matter. Replaying one real prompt against
 stopped mid-string with an ordinary `stop_reason`. The constrained path failed
 0 times in 174.
 
+Anthropic uses a strict forced tool call for that measured Sonnet 5 behavior.
+Only `claude-sonnet-5-5` uses native `output_config.format` JSON output instead:
+[Sonnet 5.5 rejects forced tool use](https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5#forced-tool-use-is-not-supported).
+That path sends no tools, leaves thinking settings alone, and reads JSON from
+text blocks while ignoring thinking blocks. `Schema.Description` is prepended
+to any root schema description in a copy; the caller's schema is unchanged.
+Other model IDs retain the forced-tool behavior; undocumented aliases and
+snapshot names are not guessed.
+
 **The schema has to use a narrow subset**, enforced locally before any HTTP, for
 the same reason `MaxTokens` is required: the providers each support a different
 slice of JSON Schema, so anything wider would mean three different things.
@@ -686,16 +695,19 @@ Three more things:
   the parser's own set. If you can't, assert the two are *equal*: a test that
   only checks every enum value survives the parser passes happily while the
   other direction is broken.
-- **`Stream` rejects a `Schema`.** Anthropic delivers a constrained answer as
-  tool input, which arrives as `input_json_delta` rather than `text_delta`, so a
-  stream would call your callback zero times. Use `Complete`.
+- **`Stream` rejects a `Schema` on every model, including Sonnet 5.5.** Older
+  Anthropic models deliver a constrained answer as tool input, which arrives as
+  `input_json_delta` rather than `text_delta`, so a stream would call your
+  callback zero times. Use `Complete`.
 - **A response the provider didn't finish is an error, not partial text.** This
   is the one place `MaxTokens` truncation *is* an error: a half-written instance
   of a schema is invalid JSON by construction, so handing it back as success is
-  the exact silent corruption the schema was meant to remove. Only Anthropic's
-  `stop_reason: "tool_use"` and OpenAI/xAI's `finish_reason: "stop"` are
-  accepted; every other reason, including one a provider adds later, is an
-  error. There's no retry and no JSON repair.
+  the exact silent corruption the schema was meant to remove. Anthropic
+  requires `stop_reason: "end_turn"` for Sonnet 5.5 native JSON and `"tool_use"`
+  for forced tools. OpenAI/xAI require `finish_reason: "stop"`. Every other
+  reason, including one a provider adds later, is an error. A successful
+  structured response must also be one valid JSON object. There's no retry
+  and no JSON repair.
 
 There's no fallback either. If the model can't do this, the provider's 400 comes
 back with the model named and the provider's own reason attached - not a quiet

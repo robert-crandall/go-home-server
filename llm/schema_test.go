@@ -184,7 +184,13 @@ func TestRequestsWithoutASchemaCarryNoSchemaFields(t *testing.T) {
 			Anthropic,
 			Config{Anthropic: ProviderConfig{APIKey: "sk-ant", Model: "claude-test"}},
 			`{"content":[{"type":"text","text":"hi"}]}`,
-			[]string{"tools", "tool_choice"},
+			[]string{"tools", "tool_choice", "output_config"},
+		},
+		{
+			Anthropic,
+			sonnet55Cfg,
+			`{"content":[{"type":"thinking"},{"type":"text","text":"hi"}]}`,
+			[]string{"tools", "tool_choice", "output_config"},
 		},
 		{
 			OpenAI,
@@ -346,17 +352,19 @@ func TestStreamRejectsASchemaBeforeAnyHTTP(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := testClient(t, anthropicCfg, srv)
-	calls := 0
-	_, err := c.Stream(context.Background(), schemaRequest(Anthropic), func(string) error {
-		calls++
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "does not support Request.Schema") {
-		t.Fatalf("error = %v, want a Schema rejection", err)
-	}
-	if calls != 0 {
-		t.Errorf("onText called %d times", calls)
+	for _, cfg := range []Config{anthropicCfg, sonnet55Cfg} {
+		c := testClient(t, cfg, srv)
+		calls := 0
+		_, err := c.Stream(context.Background(), schemaRequest(Anthropic), func(string) error {
+			calls++
+			return nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "does not support Request.Schema") {
+			t.Fatalf("error = %v, want a Schema rejection", err)
+		}
+		if calls != 0 {
+			t.Errorf("onText called %d times", calls)
+		}
 	}
 }
 
@@ -504,11 +512,13 @@ func TestBadSchemaIsRejectedBeforeAnyHTTP(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := testClient(t, anthropicCfg, srv)
-	req := schemaRequest(Anthropic)
-	req.Schema.JSON = json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}`)
-	if _, err := c.Complete(context.Background(), req); err == nil {
-		t.Fatal("Complete accepted an invalid schema")
+	for _, cfg := range []Config{anthropicCfg, sonnet55Cfg} {
+		c := testClient(t, cfg, srv)
+		req := schemaRequest(Anthropic)
+		req.Schema.JSON = json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}`)
+		if _, err := c.Complete(context.Background(), req); err == nil {
+			t.Fatal("Complete accepted an invalid schema")
+		}
 	}
 }
 

@@ -16,11 +16,10 @@ const (
 	// anthropicRefusal is the stop_reason for a request the model declined.
 	anthropicRefusal = "refusal"
 	// anthropicToolUse is the stop_reason for a turn that ended in a tool
-	// call, and the only one a schema-constrained response may carry. The
-	// others - end_turn, max_tokens, stop_sequence, pause_turn,
-	// model_context_window_exceeded - all mean the model stopped somewhere
-	// other than the end of the tool input.
+	// call, and the only one a forced-tool response may carry.
 	anthropicToolUse = "tool_use"
+	// Native JSON output completes with end_turn rather than a tool call.
+	anthropicEndTurn = "end_turn"
 )
 
 // anthropicProvider speaks Anthropic's Messages API, which differs from the
@@ -57,11 +56,20 @@ type anthropicRequest struct {
 	// Stream is omitted on the blocking path, so that request body is
 	// byte-for-byte what it was before streaming existed.
 	Stream bool `json:"stream,omitempty"`
-	// Tools and ToolChoice carry a Request.Schema, and are omitted otherwise so
-	// an unconstrained request is byte-for-byte what it was before schemas
-	// existed.
-	Tools      []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
+	// Schema uses either forced tools or native JSON output, never both.
+	// All three fields are omitted for unconstrained requests.
+	Tools        []anthropicTool        `json:"tools,omitempty"`
+	ToolChoice   *anthropicToolChoice   `json:"tool_choice,omitempty"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+}
+
+type anthropicOutputConfig struct {
+	Format anthropicJSONFormat `json:"format"`
+}
+
+type anthropicJSONFormat struct {
+	Type   string          `json:"type"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 // anthropicTool is one tool definition. This is the only tool this package ever
@@ -72,7 +80,7 @@ type anthropicRequest struct {
 // obvious fit: measured against claude-sonnet-5 on a real prompt, the native
 // format truncated 23 times in 366 calls - it would degenerate into a run of
 // closing braces and burn to max_tokens - while forced tool use failed 0 times
-// in 174.
+// in 174. Sonnet 5.5 rejects forced tool use, so it must use the native format.
 type anthropicTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
@@ -142,7 +150,7 @@ func (p *anthropicProvider) setAuth(h http.Header) {
 
 func (p *anthropicProvider) url() string { return p.baseURL + "/v1/messages" }
 
-func (p *anthropicProvider) requestBody(req Request, model string) anthropicRequest {
+func (p *anthropicProvider) requestBody(req Request, model string) (anthropicRequest, error) {
 	body := anthropicRequest{Model: model, MaxTokens: req.MaxTokens, Temperature: req.Temperature}
 
 	// validate() guarantees a system message is first if present, so hoisting
@@ -156,6 +164,18 @@ func (p *anthropicProvider) requestBody(req Request, model string) anthropicRequ
 	}
 
 	if s := req.Schema; s != nil {
+		// Only this documented model rejects forced tool use. Do not infer
+		// support from a prefix or change older models' measured behavior.
+		if model == "claude-sonnet-5-5" {
+			schema, err := anthropicNativeSchema(s)
+			if err != nil {
+				return anthropicRequest{}, err
+			}
+			body.OutputConfig = &anthropicOutputConfig{
+				Format: anthropicJSONFormat{Type: "json_schema", Schema: schema},
+			}
+			return body, nil
+		}
 		body.Tools = []anthropicTool{{
 			Name:        s.Name,
 			Description: s.Description,
@@ -168,12 +188,43 @@ func (p *anthropicProvider) requestBody(req Request, model string) anthropicRequ
 			DisableParallelToolUse: true,
 		}
 	}
-	return body
+	return body, nil
+}
+
+// The native format has no outer description field. Copy it into the schema
+// root, preserving any existing description and the caller's JSON. Raw values
+// keep integer enums exact instead of rounding them through float64.
+func anthropicNativeSchema(s *Schema) (json.RawMessage, error) {
+	if s.Description == "" {
+		return s.JSON, nil
+	}
+	schema, ok := decodeJSONObject(s.JSON)
+	if !ok {
+		return nil, fmt.Errorf("llm: %s: schema is not a JSON object", Anthropic)
+	}
+	description := s.Description
+	if root, ok := jsonString(schema["description"]); ok && root != "" {
+		description += "\n\n" + root
+	}
+	encoded, err := json.Marshal(description)
+	if err != nil {
+		return nil, fmt.Errorf("llm: %s: encode schema description: %w", Anthropic, err)
+	}
+	schema["description"] = encoded
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, fmt.Errorf("llm: %s: encode native schema: %w", Anthropic, err)
+	}
+	return raw, nil
 }
 
 func (p *anthropicProvider) complete(ctx context.Context, req Request, model string) (Response, error) {
+	body, err := p.requestBody(req, model)
+	if err != nil {
+		return Response{}, err
+	}
 	var out anthropicResponse
-	err := doJSON(ctx, p.http, Anthropic, p.url(), p.apiKey, p.setAuth, p.requestBody(req, model), &out)
+	err = doJSON(ctx, p.http, Anthropic, p.url(), p.apiKey, p.setAuth, body, &out)
 	if err != nil {
 		return Response{}, schemaRequestError(Anthropic, model, req.Schema, err)
 	}
@@ -192,11 +243,16 @@ func (p *anthropicProvider) complete(ctx context.Context, req Request, model str
 	}
 
 	if req.Schema != nil {
-		text, err := anthropicToolInput(req.Schema.Name, out)
-		if err != nil {
-			return Response{}, err
+		if body.OutputConfig == nil {
+			text, err := anthropicToolInput(req.Schema.Name, out)
+			if err != nil {
+				return Response{}, err
+			}
+			return Response{Provider: Anthropic, Model: respModel, Text: text}, nil
 		}
-		return Response{Provider: Anthropic, Model: respModel, Text: text}, nil
+		if out.StopReason != anthropicEndTurn {
+			return Response{}, fmt.Errorf("llm: %s: structured response did not complete: stop_reason %q, want %q", Anthropic, out.StopReason, anthropicEndTurn)
+		}
 	}
 
 	// content is an array of typed blocks and the first one is not guaranteed
@@ -211,6 +267,11 @@ func (p *anthropicProvider) complete(ctx context.Context, req Request, model str
 	}
 	if text.Len() == 0 {
 		return Response{}, fmt.Errorf("llm: %s: response contained no text blocks", Anthropic)
+	}
+	if req.Schema != nil {
+		if _, ok := decodeJSONObject(json.RawMessage(text.String())); !ok {
+			return Response{}, fmt.Errorf("llm: %s: structured response was not a JSON object", Anthropic)
+		}
 	}
 
 	return Response{
@@ -269,7 +330,10 @@ func anthropicToolInput(name string, out anthropicResponse) (string, error) {
 }
 
 func (p *anthropicProvider) stream(ctx context.Context, req Request, model string, onText func(string) error) (Response, error) {
-	body := p.requestBody(req, model)
+	body, err := p.requestBody(req, model)
+	if err != nil {
+		return Response{}, err
+	}
 	body.Stream = true
 
 	var (
@@ -278,7 +342,7 @@ func (p *anthropicProvider) stream(ctx context.Context, req Request, model strin
 		stopReason string
 	)
 
-	err := doStream(ctx, p.http, Anthropic, p.url(), p.apiKey, p.setAuth, body, func(data string) error {
+	err = doStream(ctx, p.http, Anthropic, p.url(), p.apiKey, p.setAuth, body, func(data string) error {
 		var e anthropicStreamEvent
 		if err := json.Unmarshal([]byte(data), &e); err != nil {
 			return fmt.Errorf("llm: %s: decode stream event: %w", Anthropic, err)
