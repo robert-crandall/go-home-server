@@ -326,23 +326,6 @@ func (s *Service) openThumb(ctx context.Context, userID, id int64) (*os.File, Fi
 	return fh, f, nil
 }
 
-// ThumbnailResponse serves a generated JPEG belonging to ownerID. It returns
-// ErrNotFound for a missing file/thumbnail or a different owner; storage errors
-// remain errors. It does not authenticate the requester: app handlers must
-// authorize access to this specific owner's file before calling it.
-//
-// Return a successful response directly from a humachi-backed huma handler.
-// The response owns an open file and closes it after streaming. The standard
-// /api/files routes remain owner-only; this method adds no route or sharing policy.
-func (s *Service) ThumbnailResponse(ctx context.Context, ownerID, fileID int64) (*huma.StreamResponse, error) {
-	fh, meta, err := s.openThumb(ctx, ownerID, fileID)
-	if err != nil {
-		return nil, err
-	}
-	// Always inline: this is a JPEG we generated, not arbitrary uploaded bytes.
-	return streamBlob(fh, meta, thumbContentType, "inline"), nil
-}
-
 // --- storage helpers -------------------------------------------------------
 
 // storageKey builds an on-disk name: random bytes plus a sanitized extension.
@@ -663,11 +646,16 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		if err != nil {
 			return nil, err
 		}
-		response, err := svc.ThumbnailResponse(ctx, userID, in.ID)
+		fh, meta, err := svc.openThumb(ctx, userID, in.ID)
 		if errors.Is(err, ErrNotFound) {
 			return nil, huma.Error404NotFound("thumbnail not found")
 		}
-		return response, err
+		if err != nil {
+			return nil, err
+		}
+		// Always inline: it's a JPEG we generated, so it can't be the stored
+		// XSS case contentDisposition guards against.
+		return streamBlob(fh, meta, thumbContentType, "inline"), nil
 	})
 
 	huma.Register(api, huma.Operation{

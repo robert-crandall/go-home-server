@@ -162,7 +162,7 @@ endpoints, and the service still uses real storage, encryption, and VAPID signin
 Tests can use `https://push.example.invalid/...` with an injected transport;
 there is no need to replace `http.DefaultTransport` or contact a push provider.
 
-### App-owned invitations and avatars
+### App-owned invitations
 
 An app can allow invited password signups without opening public registration.
 Set `authSvc.RegisterInvitation` before serving requests:
@@ -192,16 +192,6 @@ Omitted or empty invitations keep the first-user-only policy (or explicit
 `OpenRegistration`). A supplied invitation always runs the hook, even with open
 registration; without a hook, it is rejected with 403.
 `RegistrationOpen` still describes **uninvited** registration, not link validity.
-
-For an app-authorized avatar route, call
-`filesSvc.ThumbnailResponse(ctx, ownerID, fileID)` and return its successful
-`*huma.StreamResponse` directly from a humachi-backed handler. Authenticate the
-requester and resolve the specific permitted avatar first; never trust an
-arbitrary owner/file pair from the request. The helper checks file ownership,
-returns `files.ErrNotFound` for absent thumbnails or wrong owners, and leaves
-storage failures as errors. It owns the open file until streaming completes and
-keeps JPEG headers, private cache revalidation, and Range support.
-The general `/api/files` routes remain owner-only.
 
 ### Configuration
 
@@ -889,7 +879,9 @@ these - if you think one has actually become a problem, say so and make the case
   user ID, so rows owned by the old user remain invisible to the new account; if
   the old user is hard-deleted, foreign keys configured with `ON DELETE CASCADE`
   will delete their rows. Not worth a `cmd/createuser` bootstrap command, a
-  latched gate, or a one-time signup token.
+  latched gate, or a one-time signup token to guard that window.
+  `RegisterInvitation` serves a different purpose: admitting additional
+  household members after bootstrap. It leaves this first-user window unchanged.
 
 - **CSRF protection is `SameSite=Lax`.** The foundation adds no CSRF token or
   origin check. Explicit `SameSite=Lax` withholds the session cookie on

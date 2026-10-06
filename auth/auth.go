@@ -83,8 +83,8 @@ type Service struct {
 	secure bool // set the Secure cookie flag (true in production/HTTPS)
 
 	// OpenRegistration allows anyone to register. When false (the default),
-	// registration is first-user-only: it succeeds only while no active user
-	// exists, then closes. This is the safe default for single-user apps.
+	// uninvited registration succeeds only while no active user exists, then
+	// closes. This is the safe default for single-user apps.
 	//
 	// Two consequences are known and deliberate: /api/auth/register is open
 	// from the moment the app is reachable until the first account exists, and
@@ -92,7 +92,9 @@ type Service struct {
 	// deleting the last user or booting against an empty database reopens it.
 	// These apps run on a private network, so the fix for a reopened window is
 	// to register again. Don't add a bootstrap CLI, a latched gate, or a signup
-	// token for it - see "Acknowledged, not fixed" in the README.
+	// token to guard that window - see "Acknowledged, not fixed" in the README.
+	// RegisterInvitation instead admits later members; it doesn't guard or
+	// change the first-user window.
 	OpenRegistration bool
 
 	// RegisterInvitation permits password registration with an invitation.
