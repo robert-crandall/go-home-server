@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -603,8 +604,33 @@ func TestThumbnailRoundTrip(t *testing.T) {
 			t.Errorf("%s = %q, want %q", header, got, want)
 		}
 	}
-	if dl.Header.Get("Last-Modified") == "" {
-		t.Error("Last-Modified is empty, so revalidation can never produce a 304")
+	etag := dl.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("thumbnail ETag is empty")
+	}
+	if dl.Header.Get("Last-Modified") != "" {
+		t.Error("thumbnail must not expose an unsafe date validator")
+	}
+	original := h.get(fmt.Sprintf("/api/files/%d", created.ID))
+	defer original.Body.Close()
+	if original.Header.Get("ETag") != "" {
+		t.Error("original download unexpectedly gained an ETag")
+	}
+	if original.Header.Get("Last-Modified") == "" {
+		t.Error("original download lost date-based revalidation")
+	}
+	req, err := http.NewRequest(http.MethodGet, original.Request.URL.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("If-Modified-Since", original.Header.Get("Last-Modified"))
+	conditional, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conditional.Body.Close()
+	if conditional.StatusCode != http.StatusNotModified {
+		t.Errorf("original conditional download = %d, want 304", conditional.StatusCode)
 	}
 
 	body, err := io.ReadAll(dl.Body)
@@ -623,6 +649,202 @@ func TestThumbnailRoundTrip(t *testing.T) {
 	// own JPEG thumbnail. That's harmless - both files are a few KB - and
 	// adding a "skip if larger" branch would buy nothing on the photos this
 	// feature exists for, where the original is megabytes.
+}
+
+func TestThumbnailResponseForAppHandlers(t *testing.T) {
+	pool := testPool(t)
+	dir := t.TempDir()
+	svc, err := NewService(pool, Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := makeUser(t, pool, "owner@example.com")
+	other := makeUser(t, pool, "other@example.com")
+	ctx := context.Background()
+	photo, err := svc.Save(ctx, owner, "photo.png", bytes.NewReader(pngBytes(t, 800, 600)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := svc.Save(ctx, owner, "plain.txt", strings.NewReader("not an image"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	router := chi.NewMux()
+	api := humachi.New(router, huma.DefaultConfig("test", "1.0.0"))
+	// These IDs stand in for the app's already-authorized avatar selection.
+	ownerID, fileID := owner, photo.ID
+	authorized := true
+	huma.Register(api, huma.Operation{
+		OperationID: "app-avatar", Method: http.MethodGet, Path: "/avatar",
+	}, func(ctx context.Context, _ *struct{}) (*huma.StreamResponse, error) {
+		if !authorized {
+			return nil, huma.Error403Forbidden("avatar access denied")
+		}
+		response, err := svc.ThumbnailResponse(ctx, ownerID, fileID)
+		if errors.Is(err, ErrNotFound) {
+			return nil, huma.Error404NotFound("avatar not found")
+		}
+		return response, err
+	})
+	get := func(header, value string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/avatar", nil)
+		if header != "" {
+			req.Header.Set(header, value)
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := get("", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes())); err != nil {
+		t.Fatalf("thumbnail is not JPEG: %v", err)
+	}
+	for header, want := range map[string]string{
+		"Content-Type": "image/jpeg", "Content-Disposition": "inline",
+		"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if ranged := get("Range", "bytes=0-9"); ranged.Code != http.StatusPartialContent ||
+		!bytes.Equal(ranged.Body.Bytes(), rec.Body.Bytes()[:10]) {
+		t.Fatalf("range status/body = %d/%q", ranged.Code, ranged.Body.Bytes())
+	}
+	etag := rec.Header().Get("ETag")
+	if etag == "" || get("If-None-Match", etag).Code != http.StatusNotModified {
+		t.Fatal("conditional thumbnail request did not return 304")
+	}
+	authorized = false
+	if got := get("If-None-Match", etag).Code; got != http.StatusForbidden {
+		t.Fatalf("unauthorized status = %d, want 403, not cached content", got)
+	}
+	authorized = true
+	ownerID = other
+	if got := get("If-None-Match", etag).Code; got != http.StatusNotFound {
+		t.Fatalf("different owner status = %d, want 404, not cached content", got)
+	}
+	if response, err := svc.ThumbnailResponse(ctx, other, photo.ID); response != nil || err != ErrNotFound {
+		t.Fatalf("different owner response/error = %v/%v, want nil/ErrNotFound", response, err)
+	}
+	ownerID = owner
+	for _, id := range []int64{plain.ID, -1} {
+		fileID = id
+		if got := get("", "").Code; got != http.StatusNotFound {
+			t.Fatalf("missing thumbnail %d status = %d, want 404", id, got)
+		}
+		if response, err := svc.ThumbnailResponse(ctx, owner, id); response != nil || err != ErrNotFound {
+			t.Fatalf("missing thumbnail response/error = %v/%v, want nil/ErrNotFound", response, err)
+		}
+	}
+	fileID = photo.ID
+	_, key, err := svc.meta(ctx, owner, photo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, thumbName(key))); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("", "").Code; got != http.StatusInternalServerError {
+		t.Fatalf("damaged storage status = %d, want 500", got)
+	}
+	if response, err := svc.ThumbnailResponse(ctx, owner, photo.ID); response != nil ||
+		err == nil || !strings.Contains(err.Error(), "missing from the upload directory") {
+		t.Fatalf("damaged storage response/error = %v/%v, want raw storage error", response, err)
+	}
+}
+
+func TestThumbnailResponseStableURL(t *testing.T) {
+	for _, age := range []time.Duration{time.Hour, 0} {
+		t.Run(age.String(), func(t *testing.T) {
+			pool := testPool(t)
+			svc, err := NewService(pool, Options{Dir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			owner := makeUser(t, pool, "owner@example.com")
+			a, err := svc.Save(ctx, owner, "a.png", bytes.NewReader(pngBytes(t, 80, 60)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := svc.Save(ctx, owner, "b.png", bytes.NewReader(pngBytes(t, 60, 80)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			uploadedAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			for id, createdAt := range map[int64]time.Time{a.ID: uploadedAt, b.ID: uploadedAt.Add(-age)} {
+				if _, err := pool.Exec(ctx, `UPDATE files SET created_at = $1 WHERE id = $2`, createdAt, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			router := chi.NewMux()
+			api := humachi.New(router, huma.DefaultConfig("test", "1.0.0"))
+			fileID := a.ID
+			huma.Register(api, huma.Operation{
+				OperationID: "app-avatar", Method: http.MethodGet, Path: "/avatar",
+			}, func(ctx context.Context, _ *struct{}) (*huma.StreamResponse, error) {
+				return svc.ThumbnailResponse(ctx, owner, fileID)
+			})
+			get := func(headers map[string]string) *httptest.ResponseRecorder {
+				t.Helper()
+				req := httptest.NewRequest(http.MethodGet, "/avatar", nil)
+				for key, value := range headers {
+					req.Header.Set(key, value)
+				}
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				return rec
+			}
+			cached := get(nil)
+			fileID = b.ID
+			current := get(nil)
+			if cached.Code != http.StatusOK || current.Code != http.StatusOK ||
+				bytes.Equal(cached.Body.Bytes(), current.Body.Bytes()) {
+				t.Fatal("setup: avatars must return 200 with distinct bytes")
+			}
+			oldETag := cached.Header().Get("ETag")
+			currentETag := current.Header().Get("ETag")
+			if oldETag == "" || currentETag == "" || oldETag == currentETag {
+				t.Error("avatars must have distinct nonempty ETags")
+			}
+			// A pre-upgrade cache or a date-only client may still send the
+			// upload date, even though new thumbnail responses omit it.
+			oldDate := uploadedAt.Format(http.TimeFormat)
+			for name, headers := range map[string]map[string]string{
+				"etag":          {"If-None-Match": oldETag},
+				"etag-and-date": {"If-None-Match": oldETag, "If-Modified-Since": oldDate},
+				"date-only":     {"If-Modified-Since": oldDate},
+				"range-etag":    {"Range": "bytes=0-9", "If-Range": oldETag},
+				"range-date":    {"Range": "bytes=0-9", "If-Range": oldDate},
+			} {
+				t.Run(name, func(t *testing.T) {
+					rec := get(headers)
+					if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), current.Body.Bytes()) {
+						t.Fatalf("stale validators returned %d, want 200 with avatar B bytes", rec.Code)
+					}
+					if rec.Header().Get("ETag") != currentETag {
+						t.Error("response did not carry avatar B's ETag")
+					}
+				})
+			}
+			fresh := get(map[string]string{"If-None-Match": currentETag, "If-Modified-Since": oldDate})
+			if fresh.Code != http.StatusNotModified || fresh.Body.Len() != 0 ||
+				fresh.Header().Get("ETag") != currentETag || fresh.Header().Get("Cache-Control") != "private, no-cache" {
+				t.Fatalf("current ETag returned %d with headers %v, want private 304", fresh.Code, fresh.Header())
+			}
+			ranged := get(map[string]string{"Range": "bytes=0-9", "If-Range": currentETag})
+			if ranged.Code != http.StatusPartialContent || !bytes.Equal(ranged.Body.Bytes(), current.Body.Bytes()[:10]) {
+				t.Fatalf("current ETag range returned %d, want 206 with avatar B bytes", ranged.Code)
+			}
+		})
+	}
 }
 
 // An upload we can't decode still succeeds; it just has no thumbnail to serve.
@@ -704,18 +926,38 @@ func TestOtherUsersThumbnailIsNotFound(t *testing.T) {
 		t.Fatal("setup: expected a thumbnail")
 	}
 
+	thumbnailPath := fmt.Sprintf("/api/files/%d/thumbnail", created.ID)
+	cached := h.get(thumbnailPath)
+	cached.Body.Close()
+	etag := cached.Header.Get("ETag")
+	if cached.StatusCode != http.StatusOK || etag == "" {
+		t.Fatal("setup: expected an owner thumbnail with an ETag")
+	}
+	getConditional := func() *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, h.server.URL+thumbnailPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("If-None-Match", etag)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
 	h.userID = bob
-	dl := h.get(fmt.Sprintf("/api/files/%d/thumbnail", created.ID))
+	dl := getConditional()
 	defer dl.Body.Close()
 	if dl.StatusCode != http.StatusNotFound {
 		t.Errorf("bob's fetch of alice's thumbnail = %d, want 404", dl.StatusCode)
 	}
 
-	h.authErr = errors.New("no session")
-	anon := h.get(fmt.Sprintf("/api/files/%d/thumbnail", created.ID))
+	h.authErr = huma.Error401Unauthorized("no session")
+	anon := getConditional()
 	defer anon.Body.Close()
-	if anon.StatusCode == http.StatusOK {
-		t.Errorf("anonymous fetch = %d, want a failure", anon.StatusCode)
+	if anon.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous conditional fetch = %d, want 401", anon.StatusCode)
 	}
 }
 
