@@ -162,6 +162,47 @@ endpoints, and the service still uses real storage, encryption, and VAPID signin
 Tests can use `https://push.example.invalid/...` with an injected transport;
 there is no need to replace `http.DefaultTransport` or contact a push provider.
 
+### App-owned invitations and avatars
+
+An app can allow invited password signups without opening public registration.
+Set `authSvc.RegisterInvitation` before serving requests:
+
+```go
+// Implement this in the app; the foundation owns no invitation or household tables.
+func registerInvitation(ctx context.Context, tx pgx.Tx, user auth.User, token string) error
+```
+
+Assign that function to `authSvc.RegisterInvitation`. Clients send the optional
+`invitation` field (at most 128 characters) to the existing
+`POST /api/auth/register`, alongside `email`, `password`, and optional `name`.
+The hook receives the inserted user, including the trimmed name. It must validate
+and atomically consume the invitation and create the app's membership using
+the supplied transaction. For example, `DELETE ... WHERE token_hash = ...
+AND expires_at > now() RETURNING ...` lets only one signup consume a token.
+Return a safe `huma.StatusError` for client-facing rejection, such as 403 for an
+invalid invitation or 422 if the app requires a name.
+
+The hook runs before the normal session is created. Any hook, session, or commit
+failure rolls back the user and every app write in that transaction. Do not commit
+or roll back the transaction from the hook, send invitations, or write files there:
+external side effects do not roll back. Keep invitation storage and delivery in
+the app. Google sign-in and `CreateUser` do not call this hook.
+
+Omitted or empty invitations keep the first-user-only policy (or explicit
+`OpenRegistration`). A supplied invitation always runs the hook, even with open
+registration; without a hook, it is rejected with 403.
+`RegistrationOpen` still describes **uninvited** registration, not link validity.
+
+For an app-authorized avatar route, call
+`filesSvc.ThumbnailResponse(ctx, ownerID, fileID)` and return its successful
+`*huma.StreamResponse` directly from a humachi-backed handler. Authenticate the
+requester and resolve the specific permitted avatar first; never trust an
+arbitrary owner/file pair from the request. The helper checks file ownership,
+returns `files.ErrNotFound` for absent thumbnails or wrong owners, and leaves
+storage failures as errors. It owns the open file until streaming completes and
+keeps JPEG headers, private cache revalidation, and Range support.
+The general `/api/files` routes remain owner-only.
+
 ### Configuration
 
 `config.Load` reads these from the environment (and an optional `.env` in the
