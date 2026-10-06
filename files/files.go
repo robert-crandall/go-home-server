@@ -326,6 +326,28 @@ func (s *Service) openThumb(ctx context.Context, userID, id int64) (*os.File, Fi
 	return fh, f, nil
 }
 
+// ThumbnailResponse serves a generated JPEG belonging to ownerID. It returns
+// ErrNotFound for a missing file/thumbnail or a different owner; storage errors
+// remain errors. It does not authenticate the requester: app handlers must
+// authorize access to this specific owner's file before calling it.
+//
+// Return a successful response directly from a humachi-backed huma handler.
+// The response owns an open file and closes it after streaming. The standard
+// /api/files routes remain owner-only; this method adds no route or sharing policy.
+// Revalidation uses an ETag, not Last-Modified: an app's stable avatar URL can
+// switch to an older file or another file uploaded in the same second.
+func (s *Service) ThumbnailResponse(ctx context.Context, ownerID, fileID int64) (*huma.StreamResponse, error) {
+	fh, meta, err := s.openThumb(ctx, ownerID, fileID)
+	if err != nil {
+		return nil, err
+	}
+	// No upload date can validate a mutable avatar selection. Zero modtime also
+	// disables date-only If-Modified-Since and If-Range in ServeContent.
+	meta.CreatedAt = time.Time{}
+	// Always inline: this is a JPEG we generated, not arbitrary uploaded bytes.
+	return streamBlob(fh, meta, thumbContentType, "inline", fmt.Sprintf(`"file-%d-thumbnail"`, meta.ID)), nil
+}
+
 // --- storage helpers -------------------------------------------------------
 
 // storageKey builds an on-disk name: random bytes plus a sanitized extension.
@@ -615,7 +637,7 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 			return nil, err
 		}
 		return streamBlob(fh, meta, meta.ContentType,
-			contentDisposition(meta.ContentType, meta.Filename)), nil
+			contentDisposition(meta.ContentType, meta.Filename), ""), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -646,16 +668,11 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 		if err != nil {
 			return nil, err
 		}
-		fh, meta, err := svc.openThumb(ctx, userID, in.ID)
+		response, err := svc.ThumbnailResponse(ctx, userID, in.ID)
 		if errors.Is(err, ErrNotFound) {
 			return nil, huma.Error404NotFound("thumbnail not found")
 		}
-		if err != nil {
-			return nil, err
-		}
-		// Always inline: it's a JPEG we generated, so it can't be the stored
-		// XSS case contentDisposition guards against.
-		return streamBlob(fh, meta, thumbContentType, "inline"), nil
+		return response, err
 	})
 
 	huma.Register(api, huma.Operation{
@@ -685,26 +702,29 @@ func Register(api huma.API, svc *Service, currentUser CurrentUserFunc) {
 
 // streamBlob builds the response that streams an open blob to the client. The
 // handle is closed when the body has been written.
-func streamBlob(fh *os.File, meta File, contentType, disposition string) *huma.StreamResponse {
+func streamBlob(fh *os.File, meta File, contentType, disposition, etag string) *huma.StreamResponse {
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		defer fh.Close()
 		r, w := humachi.Unwrap(hctx)
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Disposition", disposition)
+		if etag != "" {
+			w.Header().Set("ETag", etag)
+		}
 		// A given id's bytes never change, but the response is per-user and
 		// deletable, so it must NOT be cached without revalidation: browser
 		// caches key on URL, not on session, so an `immutable` blob would still
 		// be readable after logging out and back in as someone else, and a
 		// deleted photo would linger client-side. `no-cache` still gets the
 		// bandwidth win - the revalidation re-enters the handler, passes the
-		// auth and ownership checks, and ServeContent answers 304 from
-		// Last-Modified.
+		// auth and ownership checks, and ServeContent answers 304 from the ETag
+		// (thumbnails) or Last-Modified (originals).
 		w.Header().Set("Cache-Control", "private, no-cache")
 		// ServeContent gives Range support (Safari's <video> requires it) and
 		// conditional GETs. huma runs this func before writing status or
-		// headers, so its 206/304 responses land intact. The modtime must be
-		// non-zero or If-Modified-Since is skipped entirely.
+		// headers, so its 206/304 responses land intact. Only originals keep
+		// their upload time for date-based revalidation.
 		http.ServeContent(w, r, meta.Filename, meta.CreatedAt, fh)
 	}}
 }

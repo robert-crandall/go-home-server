@@ -93,6 +93,24 @@ go-home-server/
   neither belongs in a distroless image) and neither do files that were
   uploaded before this existed - both fall back to the original. There's no
   dedup or quota - the volume's size is the quota.
+
+  App-owned avatar routes can return
+  `filesSvc.ThumbnailResponse(ctx, ownerID, fileID)` directly from a
+  humachi-backed huma handler. The app must authenticate the caller, authorize
+  access, and select the specific permitted avatar before calling it; the helper
+  checks file ownership, not the caller's sharing permissions. It returns
+  `(*huma.StreamResponse, error)`: raw `files.ErrNotFound` for the wrong owner, a
+  missing file, or no thumbnail; other errors report storage/database failures.
+  A successful response owns an open file and closes it after streaming.
+
+  `/api/files` stays owner-only and responses remain `private, no-cache`;
+  authorization runs before revalidation. Thumbnails use file-specific ETags
+  instead of `Last-Modified`, including the standard thumbnail route, so a
+  stable avatar URL can switch to an older or same-second file without a false
+  304. Date-only conditional thumbnail requests return the current bytes; ETag
+  revalidation and ranges still work. Original downloads keep date-based
+  revalidation unchanged.
+
 - **Notifications** - store browser push subscriptions and send Web Push with
   VAPID. `notify.Send(ctx, userID, payload)` from anywhere. The frontend half
   (service worker + subscribe flow) is the app's to write; see
