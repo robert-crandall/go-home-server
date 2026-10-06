@@ -83,8 +83,8 @@ type Service struct {
 	secure bool // set the Secure cookie flag (true in production/HTTPS)
 
 	// OpenRegistration allows anyone to register. When false (the default),
-	// registration is first-user-only: it succeeds only while no active user
-	// exists, then closes. This is the safe default for single-user apps.
+	// uninvited registration succeeds only while no active user exists, then
+	// closes. This is the safe default for single-user apps.
 	//
 	// Two consequences are known and deliberate: /api/auth/register is open
 	// from the moment the app is reachable until the first account exists, and
@@ -92,8 +92,22 @@ type Service struct {
 	// deleting the last user or booting against an empty database reopens it.
 	// These apps run on a private network, so the fix for a reopened window is
 	// to register again. Don't add a bootstrap CLI, a latched gate, or a signup
-	// token for it - see "Acknowledged, not fixed" in the README.
+	// token to guard that window - see "Acknowledged, not fixed" in the README.
+	// RegisterInvitation instead admits later members; it doesn't guard or
+	// change the first-user window.
 	OpenRegistration bool
+
+	// RegisterInvitation permits password registration with an invitation.
+	// Configure it before serving requests. It runs only for a nonempty
+	// invitation, after inserting the user and before creating the session,
+	// even when OpenRegistration is true.
+	//
+	// The hook must validate and atomically consume the invitation and write
+	// any app membership using tx. Returning an error rolls everything back.
+	// It must not commit/roll back tx or perform external side effects: only
+	// database writes in tx roll back. Return a safe huma.StatusError for
+	// client-facing validation; other errors become HTTP 500.
+	RegisterInvitation func(context.Context, pgx.Tx, User, string) error
 
 	// apiTokensEnabled gates bearer (API token) authentication. TokenHumaConfig
 	// flips it on; RegisterTokens separately mounts the management endpoints and
@@ -115,8 +129,8 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// RegistrationOpen reports whether POST /api/auth/register would currently be
-// accepted. Always true when OpenRegistration is set.
+// RegistrationOpen reports whether POST /api/auth/register without an
+// invitation would currently be accepted. Always true when OpenRegistration is set.
 //
 // Advisory only: the register handler re-checks under an advisory lock, so a
 // caller can still lose the race between asking and posting.
@@ -158,9 +172,13 @@ func (s *Service) CreateUser(ctx context.Context, email, password string) (User,
 
 // registerUser gates registration and creates the user + an initial session in
 // a single transaction. When OpenRegistration is false, it takes a DB advisory
-// lock and refuses if any active user already exists, so concurrent first
-// registrations can't both win the race.
-func (s *Service) registerUser(ctx context.Context, email, password, name string) (User, string, time.Time, error) {
+// lock and refuses if any active user already exists unless an invitation hook
+// accepts the request, so concurrent first registrations can't both win the race.
+func (s *Service) registerUser(ctx context.Context, email, password, name, invitation string) (User, string, time.Time, error) {
+	if invitation != "" && s.RegisterInvitation == nil {
+		return User{}, "", time.Time{}, errRegistrationClosed
+	}
+
 	// Hash outside the transaction to keep the lock hold time short.
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -181,12 +199,14 @@ func (s *Service) registerUser(ctx context.Context, email, password, name string
 			return User{}, "", time.Time{}, err
 		}
 	}
-	open, err := s.registrationOpen(ctx, tx)
-	if err != nil {
-		return User{}, "", time.Time{}, err
-	}
-	if !open {
-		return User{}, "", time.Time{}, errRegistrationClosed
+	if invitation == "" {
+		open, err := s.registrationOpen(ctx, tx)
+		if err != nil {
+			return User{}, "", time.Time{}, err
+		}
+		if !open {
+			return User{}, "", time.Time{}, errRegistrationClosed
+		}
 	}
 
 	var u User
@@ -199,6 +219,12 @@ func (s *Service) registerUser(ctx context.Context, email, password, name string
 			return User{}, "", time.Time{}, errEmailTaken
 		}
 		return User{}, "", time.Time{}, err
+	}
+
+	if invitation != "" {
+		if err := s.RegisterInvitation(ctx, tx, u, invitation); err != nil {
+			return User{}, "", time.Time{}, err
+		}
 	}
 
 	token := randomToken()
@@ -510,14 +536,13 @@ type credentialsInput struct {
 	Body credentials
 }
 
-// registration is credentials plus an optional display name. It is spelled out
-// rather than embedding credentials so login doesn't grow a name field it has
-// no use for. The omitempty is what makes huma mark name optional, so an app
-// that posts only {email, password} keeps working.
+// Registration-only fields stay out of login. omitempty keeps existing clients
+// that post only {email, password} working.
 type registration struct {
-	Email    string `json:"email" format:"email" doc:"Email address"`
-	Password string `json:"password" minLength:"8" maxLength:"72" doc:"Password (8-72 chars)"`
-	Name     string `json:"name,omitempty" maxLength:"100" doc:"Display name (optional)"`
+	Email      string `json:"email" format:"email" doc:"Email address"`
+	Password   string `json:"password" minLength:"8" maxLength:"72" doc:"Password (8-72 chars)"`
+	Name       string `json:"name,omitempty" maxLength:"100" doc:"Display name (optional)"`
+	Invitation string `json:"invitation,omitempty" maxLength:"128" doc:"Invitation token (requires app support)"`
 }
 
 type registrationInput struct {
@@ -546,7 +571,7 @@ func (s *Service) Register(api huma.API) {
 		Errors:      []int{http.StatusForbidden, http.StatusConflict, http.StatusUnprocessableEntity},
 		Security:    apisecurity.Public(),
 	}, func(ctx context.Context, in *registrationInput) (*sessionOutput, error) {
-		u, token, exp, err := s.registerUser(ctx, in.Body.Email, in.Body.Password, strings.TrimSpace(in.Body.Name))
+		u, token, exp, err := s.registerUser(ctx, in.Body.Email, in.Body.Password, strings.TrimSpace(in.Body.Name), in.Body.Invitation)
 		if err != nil {
 			switch {
 			case errors.Is(err, errRegistrationClosed):
@@ -556,6 +581,10 @@ func (s *Service) Register(api huma.API) {
 			case errors.Is(err, errPasswordTooLong):
 				return nil, huma.Error422UnprocessableEntity("password is too long (max 72 bytes)")
 			default:
+				var statusErr huma.StatusError
+				if errors.As(err, &statusErr) {
+					return nil, statusErr
+				}
 				return nil, huma.Error500InternalServerError("could not create user", err)
 			}
 		}
