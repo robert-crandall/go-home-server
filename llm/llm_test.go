@@ -12,10 +12,8 @@ import (
 	"testing"
 )
 
-// testClient builds a Client whose providers all point at srv. Base URLs are
-// package constants rather than config (there's no proxy or self-hosted
-// endpoint in play), so the test seam is the unexported field - which is
-// reachable because these tests live in the package.
+// testClient builds a Client whose providers all point at srv. Hosted endpoints
+// are fixed, so these package tests override the unexported field.
 func testClient(t *testing.T, cfg Config, srv *httptest.Server) *Client {
 	t.Helper()
 	c, err := New(cfg, WithHTTPClient(srv.Client()))

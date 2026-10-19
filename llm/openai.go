@@ -8,10 +8,7 @@ import (
 	"strings"
 )
 
-// Default endpoints. These are package constants rather than configuration:
-// neither app talks to a proxy, Azure, or a self-hosted endpoint, so there's no
-// user-controlled URL here and no SSRF surface. Tests override the unexported
-// field below.
+// Hosted endpoints stay fixed; only LM Studio takes an operator-configured URL.
 const (
 	openAIBaseURL = "https://api.openai.com"
 	xaiBaseURL    = "https://api.x.ai"
@@ -30,20 +27,21 @@ const finishContentFilter = "content_filter"
 // truncation, and a truncated instance of a schema is invalid JSON.
 const finishStop = "stop"
 
-// openAICompatible speaks the OpenAI Chat Completions wire format, which xAI
-// implements too - so one transport serves both providers.
+// openAICompatible speaks the Chat Completions wire format shared by OpenAI,
+// xAI, and LM Studio.
 //
 // Why chat/completions and not OpenAI's newer Responses API: OpenAI now
 // recommends /v1/responses for new projects and calls chat/completions
 // "legacy", but it's supported with no announced shutdown, and it's the common
-// denominator that lets these two providers share a transport. If OpenAI ever
+// denominator that lets these providers share a transport. If OpenAI ever
 // sunsets it, that's a one-place fix here that every app picks up with
 // `go get -u` - which is the argument for this package living in the module.
 type openAICompatible struct {
-	id      ProviderID
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	id         ProviderID
+	baseURL    string
+	apiKey     string
+	ttlSeconds int
+	http       *http.Client
 }
 
 func newOpenAI(cfg ProviderConfig, h *http.Client) provider {
@@ -65,7 +63,10 @@ type openAIRequest struct {
 	// MaxCompletionTokens is the current field name for both providers:
 	// OpenAI's reasoning models require it over the older max_tokens, and xAI's
 	// docs mark max_tokens deprecated in its favor.
-	MaxCompletionTokens int `json:"max_completion_tokens"`
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+	// LM Studio documents max_tokens rather than max_completion_tokens.
+	MaxTokens int `json:"max_tokens,omitempty"`
+	TTL       int `json:"ttl,omitempty"`
 	// Temperature is omitted when the caller didn't set one, which is
 	// load-bearing rather than cosmetic: OpenAI's reasoning models reject a
 	// non-default temperature with a 400, so a request that never asked for
@@ -138,25 +139,33 @@ type openAIStreamChunk struct {
 }
 
 func (p *openAICompatible) setAuth(h http.Header) {
-	h.Set("Authorization", "Bearer "+p.apiKey)
+	if p.apiKey != "" {
+		h.Set("Authorization", "Bearer "+p.apiKey)
+	}
 }
 
 func (p *openAICompatible) url() string { return p.baseURL + "/v1/chat/completions" }
 
 func (p *openAICompatible) requestBody(req Request, model string) openAIRequest {
-	// Both providers accept a system role in the messages array, so the
+	// These providers accept a system role in the messages array, so the
 	// conversation maps across one-for-one.
 	msgs := make([]openAIMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		msgs = append(msgs, openAIMessage{Role: string(m.Role), Content: m.Content})
 	}
-	return openAIRequest{
+	body := openAIRequest{
 		Model:               model,
 		Messages:            msgs,
 		MaxCompletionTokens: req.MaxTokens,
 		Temperature:         req.Temperature,
 		ResponseFormat:      openAIResponseFormatFor(req.Schema),
 	}
+	if p.id == LMStudio {
+		body.MaxTokens = req.MaxTokens
+		body.MaxCompletionTokens = 0
+		body.TTL = p.ttlSeconds
+	}
+	return body
 }
 
 func openAIResponseFormatFor(s *Schema) *openAIResponseFormat {
