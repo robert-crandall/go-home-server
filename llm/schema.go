@@ -24,7 +24,7 @@ import (
 // ordinary stop_reason. The same prompt through the constrained path failed
 // 0 times in 174. That gap is the whole reason this exists.
 //
-// The JSON must use the narrow subset that means the same thing on all three
+// The JSON must use the narrow subset that means the same thing on the supported
 // providers - see validateSchema, which enforces it locally before any HTTP so
 // a schema that would work on one backend can't silently misbehave on another:
 //

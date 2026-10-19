@@ -29,7 +29,7 @@ go-home-server/
   server/            # chi + huma bootstrap, embedded-SPA serving, graceful shutdown
   apisec/            # the OpenAPI security requirements to put on an app's own operations
   apiclient/         # tiny bearer-token HTTP client for scripts and MCP tools
-  llm/               # OpenAI / Anthropic / xAI completions behind one interface
+  llm/               # OpenAI / Anthropic / xAI / LM Studio completions
   mcp/               # dual-mode (CLI + MCP-over-stdio) harness wrapping the Go MCP SDK
   cmd/vapid/         # generate a VAPID key pair for web push
   cmd/token/         # mint an API token over the app's own HTTP API
@@ -130,9 +130,9 @@ go-home-server/
   `auth.RequireUser` documents itself identically. `User` includes bearer only
   when API tokens are enabled, so the spec never references an undeclared
   scheme. See [The API-first loop](#the-api-first-loop).
-- **LLM calls** - one small client for OpenAI, Anthropic, and xAI, so an app can
-  switch providers with a field on the request instead of three sets of HTTP
-  plumbing. `llm.New(llm.ConfigFromEnv())`, then
+- **LLM calls** - one small client for OpenAI, Anthropic, xAI, and LM Studio.
+  An app switches providers with a field on the request instead of separate HTTP
+  clients. `llm.New(llm.ConfigFromEnv())`, then
   `client.Complete(ctx, llm.Request{...})`, or `client.Stream(...)` to relay
   text as it's generated. Set `Request.Schema` to get a JSON object back instead
   of prose. It owns transport only - prompts stay in the app. See
@@ -555,9 +555,9 @@ No `env` block needed - that's what `~/.config/my-app.json` is for.
 
 ## Calling an LLM
 
-The `llm` package talks to OpenAI, Anthropic, and xAI through one interface, so
-an app that wants to switch providers changes a field instead of maintaining
-three HTTP clients.
+The `llm` package talks to OpenAI, Anthropic, xAI, and LM Studio through one
+interface, so an app that wants to switch providers changes a field instead of
+maintaining separate HTTP clients.
 
 The seam is the same one the MCP harness uses: **this package owns transport
 only.** Auth headers, request/response shapes, provider selection, and the error
@@ -584,7 +584,7 @@ Switching provider is a per-request field:
 
 ```go
 resp, err := client.Complete(ctx, llm.Request{
-    Provider:  llm.Anthropic, // or llm.OpenAI, llm.XAI
+    Provider:  llm.Anthropic, // or llm.OpenAI, llm.XAI, llm.LMStudio
     Model:     "some-model",  // optional; falls back to the configured one
     Messages:  msgs,
     MaxTokens: 1024,
@@ -604,8 +604,8 @@ resp, err := client.Complete(ctx, llm.Request{
 })
 ```
 
-Configuration is env-only, and separate from `config.Config` so apps that never
-call an LLM carry nothing:
+Configuration uses `llm.Config` or the environment, separate from `config.Config`
+so apps that never call an LLM carry nothing:
 
 ```bash
 LLM_PROVIDER=anthropic        # default provider; optional (see below)
@@ -614,10 +614,62 @@ ANTHROPIC_API_KEY=...         # ANTHROPIC_MODEL=...
 XAI_API_KEY=...               # XAI_MODEL=...
 ```
 
-A provider with no key simply isn't available. `LLM_PROVIDER` is optional when
-exactly one key is set - the single-provider case needs no default. With two
-keys and no `LLM_PROVIDER`, a request that doesn't name a provider is an error,
-because the config genuinely became ambiguous.
+A hosted provider with no key simply isn't available. LM Studio is enabled by
+its server address instead (see below). `LLM_PROVIDER` is optional when
+exactly one provider is configured - the single-provider case needs no default.
+With multiple providers and no `LLM_PROVIDER`, a request that doesn't name a
+provider is an error, because the config genuinely became ambiguous.
+
+### LM Studio
+
+Use a local server or another machine on the LAN:
+
+```bash
+LLM_PROVIDER=lmstudio
+LMSTUDIO_BASE_URL=http://192.168.1.50:1234
+LMSTUDIO_MODEL=your-downloaded-model-identifier
+LMSTUDIO_TTL_SECONDS=300
+# LMSTUDIO_API_KEY=...        # only if server authentication is enabled
+```
+
+`LMSTUDIO_BASE_URL` is the server root, with no path, query, or fragment.
+The client appends `/v1/chat/completions`; a trailing slash is fine.
+There is no default address or model. The equivalent Go configuration is:
+
+```go
+client, err := llm.New(llm.Config{
+    Default: llm.LMStudio,
+    LMStudio: llm.LMStudioConfig{
+        BaseURL:    "http://192.168.1.50:1234",
+        Model:      "your-downloaded-model-identifier",
+        TTLSeconds: 300,
+        // APIKey is optional.
+    },
+})
+```
+
+An empty API key sends no `Authorization` header; a configured key sends a
+bearer token. `Request.Model` can override the configured model.
+`TTLSeconds` / `LMSTUDIO_TTL_SECONDS` must be a non-negative integer in seconds.
+Zero or unset omits `ttl`, leaving LM Studio's server default unchanged; it
+does not disable the server's timer. Invalid configuration fails in `New`,
+including invalid environment values read by `ConfigFromEnv`.
+
+**Enable JIT loading on the LM Studio server.** The `ttl` field applies when a
+request JIT-loads the model, not to a model already loaded manually. LM Studio
+resets the idle timer on requests and unloads an idle model when the timer
+expires. See [Idle TTL and Auto-Evict](https://lmstudio.ai/docs/developer/core/ttl-and-auto-evict).
+
+Both `Complete` and `Stream` send `ttl` only to LM Studio. Hosted requests
+keep their existing endpoints and fields. LM Studio uses its documented
+`max_tokens` field; OpenAI and xAI retain `max_completion_tokens`.
+For structured replies, use `Complete` with `Request.Schema` as below.
+LM Studio receives `response_format.type: "json_schema"` with strict mode;
+choose a model that supports
+[structured output](https://lmstudio.ai/docs/developer/openai-compat/structured-output).
+Unsupported-model errors surface without retrying as unconstrained text.
+
+### Request rules
 
 A few things that surprise people, all deliberate:
 
@@ -701,7 +753,7 @@ snapshot names are not guessed.
 
 **The schema has to use a narrow subset**, enforced locally before any HTTP, for
 the same reason `MaxTokens` is required: the providers each support a different
-slice of JSON Schema, so anything wider would mean three different things.
+slice of JSON Schema, so anything wider could mean different things.
 
 - The root must be an object.
 - Types: `object`, `array`, `string`, `integer`, `number`, `boolean`.
@@ -753,8 +805,8 @@ Three more things:
   of a schema is invalid JSON by construction, so handing it back as success is
   the exact silent corruption the schema was meant to remove. Anthropic
   requires `stop_reason: "end_turn"` for Sonnet 5.5 native JSON and `"tool_use"`
-  for forced tools. OpenAI/xAI require `finish_reason: "stop"`. Every other
-  reason, including one a provider adds later, is an error. A successful
+  for forced tools. OpenAI/xAI/LM Studio require `finish_reason: "stop"`.
+  Every other reason, including one a provider adds later, is an error. A successful
   structured response must also be one valid JSON object. There's no retry
   and no JSON repair.
 
@@ -829,10 +881,10 @@ That's a non-2xx response. A failure a provider reports mid-stream, after its
 left to attach.
 
 Note the package targets OpenAI's Chat Completions endpoint rather than the
-newer Responses API. Chat Completions is what xAI implements, so it's the common
-denominator that lets two providers share one transport. It's labeled legacy but
-supported, with no announced shutdown - and if that changes, it's one fix here
-that every app picks up with `go get -u`.
+newer Responses API. Chat Completions is what xAI and LM Studio implement, so
+it's the common denominator that lets these providers share one transport.
+It's labeled legacy but supported, with no announced shutdown - and if that
+changes, it's one fix here that every app picks up with `go get -u`.
 
 ## Start a new app
 

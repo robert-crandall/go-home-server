@@ -139,6 +139,7 @@ func TestOpenAICompatibleSendsTheSchemaAsResponseFormat(t *testing.T) {
 	}{
 		{OpenAI, Config{OpenAI: ProviderConfig{APIKey: "sk-oai", Model: "gpt-test"}}},
 		{XAI, Config{XAI: ProviderConfig{APIKey: "xai-key", Model: "grok-test"}}},
+		{LMStudio, Config{LMStudio: LMStudioConfig{BaseURL: "http://localhost:1234", Model: "local-model", TTLSeconds: 300}}},
 	} {
 		t.Run(string(tc.id), func(t *testing.T) {
 			srv, got := captureBody(t, `{"model":"m","choices":[{"finish_reason":"stop","message":{"content":"{\"summary\":\"ok\",\"entries\":[]}"}}]}`)
@@ -166,6 +167,16 @@ func TestOpenAICompatibleSendsTheSchemaAsResponseFormat(t *testing.T) {
 			}
 			if resp.Text != `{"summary":"ok","entries":[]}` {
 				t.Errorf("Text = %q", resp.Text)
+			}
+			if resp.Provider != tc.id || resp.Model != "m" {
+				t.Errorf("response = %+v", resp)
+			}
+			if tc.id == LMStudio {
+				if (*got)["ttl"] != float64(300) {
+					t.Errorf("structured request ttl = %v, want 300", (*got)["ttl"])
+				}
+			} else if _, ok := (*got)["ttl"]; ok {
+				t.Errorf("hosted structured request carries ttl: %v", *got)
 			}
 		})
 	}

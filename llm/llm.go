@@ -1,4 +1,4 @@
-// Package llm calls a hosted LLM - OpenAI, Anthropic, or xAI - so apps don't
+// Package llm calls OpenAI, Anthropic, xAI, or a local LM Studio server so apps don't
 // each rebuild the HTTP plumbing.
 //
 // The seam matches the one the mcp package uses: this package owns *transport*
@@ -70,7 +70,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,6 +86,7 @@ const (
 	OpenAI    ProviderID = "openai"
 	Anthropic ProviderID = "anthropic"
 	XAI       ProviderID = "xai"
+	LMStudio  ProviderID = "lmstudio"
 )
 
 // Role is a message author. These are the only three accepted values; a
@@ -206,6 +209,20 @@ type ProviderConfig struct {
 
 func (p ProviderConfig) configured() bool { return strings.TrimSpace(p.APIKey) != "" }
 
+// LMStudioConfig configures a local or LAN-accessible LM Studio server.
+type LMStudioConfig struct {
+	// BaseURL enables the provider. Use the server root, e.g.
+	// http://localhost:1234, without a path, query, or fragment.
+	BaseURL string
+	// APIKey is optional. Empty sends no Authorization header.
+	APIKey string
+	// Model is the default model identifier; Request.Model overrides it.
+	Model string
+	// TTLSeconds sets the idle-unload timer for JIT-loaded models.
+	// Zero omits ttl and leaves the server's default unchanged.
+	TTLSeconds int
+}
+
 // Config is the resolved LLM configuration.
 //
 // This is its own struct rather than fields on config.Config (the way
@@ -217,20 +234,26 @@ type Config struct {
 	OpenAI    ProviderConfig
 	Anthropic ProviderConfig
 	XAI       ProviderConfig
+	LMStudio  LMStudioConfig
+	envErr    error
 }
 
 // ConfigFromEnv reads configuration from the environment. It honors a local
 // .env via config.LoadDotEnv (the same search the app uses) but does not
 // require the full app config.
 //
-//   - LLM_PROVIDER:    default provider ("openai" | "anthropic" | "xai"). Optional.
+//   - LLM_PROVIDER: default provider ("openai" | "anthropic" | "xai" | "lmstudio"). Optional.
 //   - OPENAI_API_KEY / OPENAI_MODEL
 //   - ANTHROPIC_API_KEY / ANTHROPIC_MODEL
 //   - XAI_API_KEY / XAI_MODEL
+//   - LMSTUDIO_BASE_URL / LMSTUDIO_MODEL / LMSTUDIO_API_KEY (optional)
+//   - LMSTUDIO_TTL_SECONDS: non-negative integer; zero or unset omits ttl.
+//
+// Invalid environment values are reported by New.
 func ConfigFromEnv() Config {
 	config.LoadDotEnv()
 
-	return Config{
+	cfg := Config{
 		Default: ProviderID(strings.TrimSpace(os.Getenv("LLM_PROVIDER"))),
 		OpenAI: ProviderConfig{
 			APIKey: os.Getenv("OPENAI_API_KEY"),
@@ -244,7 +267,20 @@ func ConfigFromEnv() Config {
 			APIKey: os.Getenv("XAI_API_KEY"),
 			Model:  os.Getenv("XAI_MODEL"),
 		},
+		LMStudio: LMStudioConfig{
+			BaseURL: os.Getenv("LMSTUDIO_BASE_URL"),
+			APIKey:  os.Getenv("LMSTUDIO_API_KEY"),
+			Model:   os.Getenv("LMSTUDIO_MODEL"),
+		},
 	}
+	if raw := strings.TrimSpace(os.Getenv("LMSTUDIO_TTL_SECONDS")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			cfg.envErr = fmt.Errorf("llm: LMSTUDIO_TTL_SECONDS must be a non-negative integer: %w", err)
+		}
+		cfg.LMStudio.TTLSeconds = n
+	}
+	return cfg
 }
 
 // Client routes completions to a configured provider. It's safe for concurrent
@@ -274,19 +310,25 @@ func WithHTTPClient(h *http.Client) Option {
 	}
 }
 
-// New builds a Client from cfg. It fails when no provider has an API key, so a
+// New builds a Client from cfg. It fails when no provider is configured, so a
 // misconfigured app dies at startup rather than on its first completion.
 //
 // The default provider (used when a Request leaves Provider empty) resolves as:
 //
-//  1. cfg.Default, which must have an API key.
-//  2. Otherwise, if exactly one provider has a key, that one - so a
+//  1. cfg.Default, which must be configured (a hosted API key or LM Studio BaseURL).
+//  2. Otherwise, if exactly one provider is configured, that one - so a
 //     single-provider app never has to set LLM_PROVIDER.
 //  3. Otherwise there is no default, and a Request without an explicit
-//     Provider is an error. Adding a second key to an app that relied on rule 2
+//     Provider is an error. Adding a provider to an app that relied on rule 2
 //     turns those calls into a clear "which one did you mean" error, which is
 //     the right outcome: the config really did become ambiguous.
 func New(cfg Config, opts ...Option) (*Client, error) {
+	if cfg.envErr != nil {
+		return nil, cfg.envErr
+	}
+	if cfg.LMStudio.TTLSeconds < 0 {
+		return nil, fmt.Errorf("llm: LMStudio.TTLSeconds (LMSTUDIO_TTL_SECONDS) must be non-negative")
+	}
 	o := clientOptions{http: &http.Client{Timeout: defaultTimeout}}
 	for _, opt := range opts {
 		opt(&o)
@@ -313,14 +355,28 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 		c.models[e.id] = strings.TrimSpace(e.cfg.Model)
 	}
 
+	if base := strings.TrimSpace(cfg.LMStudio.BaseURL); base != "" {
+		u, err := url.Parse(base)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" ||
+			u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
+			(u.Path != "" && u.Path != "/") {
+			return nil, fmt.Errorf("llm: LMStudio.BaseURL must be an http(s) server root without credentials, path, query, or fragment")
+		}
+		c.providers[LMStudio] = &openAICompatible{
+			id: LMStudio, baseURL: strings.TrimRight(base, "/"),
+			apiKey: strings.TrimSpace(cfg.LMStudio.APIKey), ttlSeconds: cfg.LMStudio.TTLSeconds, http: o.http,
+		}
+		c.models[LMStudio] = strings.TrimSpace(cfg.LMStudio.Model)
+	}
+
 	if len(c.providers) == 0 {
-		return nil, fmt.Errorf("llm: no provider configured (set one of OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY)")
+		return nil, fmt.Errorf("llm: no provider configured (set one of OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, LMSTUDIO_BASE_URL)")
 	}
 
 	switch {
 	case cfg.Default != "":
 		if _, ok := c.providers[cfg.Default]; !ok {
-			return nil, fmt.Errorf("llm: default provider %q has no API key (configured: %s)", cfg.Default, c.configuredList())
+			return nil, fmt.Errorf("llm: default provider %q is not configured (configured: %s)", cfg.Default, c.configuredList())
 		}
 		c.def = cfg.Default
 	case len(c.providers) == 1:
@@ -436,7 +492,7 @@ func (c *Client) resolve(req Request) (provider, string, error) {
 // reshuffles between runs is miserable to read).
 func (c *Client) configuredList() string {
 	got := make([]string, 0, len(c.providers))
-	for _, id := range []ProviderID{OpenAI, Anthropic, XAI} {
+	for _, id := range []ProviderID{OpenAI, Anthropic, XAI, LMStudio} {
 		if _, ok := c.providers[id]; ok {
 			got = append(got, string(id))
 		}
